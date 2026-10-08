@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"runtime"
 	"sync/atomic"
-	"unsafe"
 
 	"wgpu/native"
 )
@@ -28,19 +27,18 @@ func CreateInstance(opts *InstanceOptions) (*Instance, error) {
 	if err := Load(""); err != nil {
 		return nil, err
 	}
+	var m cmem
 	var desc *native.InstanceDescriptor
-	var extras native.InstanceExtras
 	if opts != nil {
-		extras = native.InstanceExtras{
+		extras := cnew(&m, native.InstanceExtras{
 			Chain:    native.ChainedStruct{SType: native.STypeInstanceExtras},
 			Backends: opts.Backends,
 			Flags:    opts.Flags,
-		}
-		desc = &native.InstanceDescriptor{NextInChain: uintptr(unsafe.Pointer(&extras))}
+		})
+		desc = cnew(&m, native.InstanceDescriptor{NextInChain: addr(extras)})
 	}
 	handle := native.CreateInstance(desc)
-	runtime.KeepAlive(desc)
-	runtime.KeepAlive(extras)
+	m.done()
 	if handle == 0 {
 		return nil, fmt.Errorf("wgpu: CreateInstance returned a null instance")
 	}
@@ -130,14 +128,15 @@ func (i *Instance) RequestAdapter(opts *native.RequestAdapterOptions) (*Adapter,
 
 // CreateSurfaceHWND wraps a Win32 window. hinstance may be zero.
 func (i *Instance) CreateSurfaceHWND(hwnd, hinstance uintptr) (*Surface, error) {
-	source := native.SurfaceSourceWindowsHWND{
+	var m cmem
+	source := cnew(&m, native.SurfaceSourceWindowsHWND{
 		Chain:     native.ChainedStruct{SType: native.STypeSurfaceSourceWindowsHWND},
 		Hinstance: hinstance,
 		Hwnd:      hwnd,
-	}
-	desc := native.SurfaceDescriptor{NextInChain: uintptr(unsafe.Pointer(&source))}
-	handle := native.InstanceCreateSurface(i.Native(), &desc)
-	runtime.KeepAlive(source)
+	})
+	desc := cnew(&m, native.SurfaceDescriptor{NextInChain: addr(source)})
+	handle := native.InstanceCreateSurface(i.Native(), desc)
+	m.done()
 	if handle == 0 {
 		return nil, fmt.Errorf("wgpu: CreateSurface returned a null surface")
 	}

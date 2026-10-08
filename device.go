@@ -98,20 +98,17 @@ func (d *Device) CreateBuffer(usage native.BufferUsage, size uint64, mapped bool
 
 // CreateShaderModuleWGSL compiles a WGSL shader module.
 func (d *Device) CreateShaderModuleWGSL(label, code string) (*ShaderModule, error) {
-	sourceView, sourceKeep := native.MakeString(code)
-	labelView, labelKeep := native.MakeString(label)
-	source := native.ShaderSourceWGSL{
+	var m cmem
+	source := cnew(&m, native.ShaderSourceWGSL{
 		Chain: native.ChainedStruct{SType: native.STypeShaderSourceWGSL},
-		Code:  sourceView,
-	}
-	desc := native.ShaderModuleDescriptor{
-		NextInChain: uintptr(unsafe.Pointer(&source)),
-		Label:       labelView,
-	}
-	handle := native.DeviceCreateShaderModule(d.Native(), &desc)
-	runtime.KeepAlive(sourceKeep)
-	runtime.KeepAlive(labelKeep)
-	runtime.KeepAlive(source)
+		Code:  m.str(code),
+	})
+	desc := cnew(&m, native.ShaderModuleDescriptor{
+		NextInChain: addr(source),
+		Label:       m.str(label),
+	})
+	handle := native.DeviceCreateShaderModule(d.Native(), desc)
+	m.done()
 	if handle == 0 {
 		return nil, d.fail("CreateShaderModule")
 	}
