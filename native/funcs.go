@@ -662,10 +662,10 @@ var RenderPassEncoderMultiDrawIndirect func(encoder RenderPassEncoder, buffer Bu
 var RenderPassEncoderMultiDrawIndexedIndirect func(encoder RenderPassEncoder, buffer Buffer, offset uint64, count uint32)
 
 // RenderPassEncoderMultiDrawIndirectCount is wgpuRenderPassEncoderMultiDrawIndirectCount.
-var RenderPassEncoderMultiDrawIndirectCount func(encoder RenderPassEncoder, buffer Buffer, offset uint64, count_buffer Buffer, count_buffer_offset uint64, max_count uint32)
+var RenderPassEncoderMultiDrawIndirectCount func(encoder RenderPassEncoder, buffer Buffer, offset uint64, countBuffer Buffer, countBufferOffset uint64, maxCount uint32)
 
 // RenderPassEncoderMultiDrawIndexedIndirectCount is wgpuRenderPassEncoderMultiDrawIndexedIndirectCount.
-var RenderPassEncoderMultiDrawIndexedIndirectCount func(encoder RenderPassEncoder, buffer Buffer, offset uint64, count_buffer Buffer, count_buffer_offset uint64, max_count uint32)
+var RenderPassEncoderMultiDrawIndexedIndirectCount func(encoder RenderPassEncoder, buffer Buffer, offset uint64, countBuffer Buffer, countBufferOffset uint64, maxCount uint32)
 
 // ComputePassEncoderBeginPipelineStatisticsQuery is wgpuComputePassEncoderBeginPipelineStatisticsQuery.
 var ComputePassEncoderBeginPipelineStatisticsQuery func(computePassEncoder ComputePassEncoder, querySet QuerySet, queryIndex uint32)

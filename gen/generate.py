@@ -182,6 +182,16 @@ def go_ident(name: str) -> str:
     return ident
 
 
+def go_param_name(name: str) -> str:
+    # snake_case parameters such as timeout_ns become timeoutNs.
+    parts = name.split("_")
+    if len(parts) > 1 and all(parts):
+        name = parts[0] + "".join(part[0].upper() + part[1:] for part in parts[1:])
+    if name in KEYWORDS:
+        name += "_"
+    return name
+
+
 def c_to_go_type_name(name: str) -> str:
     if not name.startswith("WGPU"):
         raise SystemExit(f"unexpected C type name {name}")
@@ -526,9 +536,7 @@ def parse_function(api: API, stmt: str, exports: set[str]) -> None:
             found = re.fullmatch(r"(?P<type>.+?) (?P<name>[A-Za-z_][A-Za-z0-9_]*)", part.strip())
             if not found:
                 raise SystemExit(f"bad parameter {part!r} in {cname}")
-            pname = found.group("name")
-            if pname in KEYWORDS:
-                pname += "_"
+            pname = go_param_name(found.group("name"))
             args.append((pname, go_param_type(found.group("type"), api)))
     if cname in RUST_BOOL_FUNCS:
         ret, args = rust_bool(cname, ret, args)
