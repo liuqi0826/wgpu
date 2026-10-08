@@ -49,6 +49,8 @@ type RenderPassDescriptor struct {
 type RenderPassEncoder struct {
 	ptr atomic.Uintptr
 	enc *CommandEncoder
+
+	debugDepth int
 }
 
 // BeginRenderPass starts a render pass.
@@ -215,8 +217,13 @@ func (p *RenderPassEncoder) DrawIndexed(indexCount, instanceCount, firstIndex ui
 	native.RenderPassEncoderDrawIndexed(p.Native(), indexCount, instanceCount, firstIndex, baseVertex, firstInstance)
 }
 
-// End finishes recording the pass.
+// End finishes recording the pass. Debug groups still open make
+// CommandEncoder.Finish fail.
 func (p *RenderPassEncoder) End() {
+	if p.debugDepth > 0 {
+		p.enc.setErr("RenderPassEncoderEnd", openGroupsStatus(p.debugDepth))
+		p.debugDepth = 0
+	}
 	native.RenderPassEncoderEnd(p.Native())
 }
 

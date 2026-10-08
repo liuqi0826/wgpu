@@ -320,6 +320,8 @@ type CommandEncoder struct {
 	dev *Device
 	ptr atomic.Uintptr
 	err error
+
+	debugDepth int
 }
 
 // setErr records the first error found on the Go side; Finish returns it.
@@ -346,6 +348,9 @@ func (e *CommandEncoder) Finish() (*CommandBuffer, error) {
 	handle := native.CommandEncoder(e.ptr.Swap(0))
 	if handle == 0 {
 		return nil, &Error{Op: "CommandEncoderFinish", Status: "encoder already finished or released"}
+	}
+	if e.debugDepth > 0 {
+		e.setErr("CommandEncoderFinish", openGroupsStatus(e.debugDepth))
 	}
 	if e.err != nil {
 		native.CommandEncoderRelease(handle)

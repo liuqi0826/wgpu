@@ -336,7 +336,10 @@ func drawFrame(device *wgpu.Device, queue *wgpu.Queue, surface *wgpu.Surface, te
 	if err != nil {
 		return err
 	}
+	// Debug groups and markers show up in RenderDoc and other GPU debuggers.
+	enc.PushDebugGroup("frame")
 	pass, err := enc.BeginRenderPass(&wgpu.RenderPassDescriptor{
+		Label: "triangle pass",
 		ColorAttachments: []wgpu.RenderPassColorAttachment{{
 			View:       view,
 			LoadOp:     native.LoadOpClear,
@@ -348,13 +351,18 @@ func drawFrame(device *wgpu.Device, queue *wgpu.Queue, surface *wgpu.Surface, te
 		enc.Release()
 		return err
 	}
+	pass.PushDebugGroup("triangle")
+	pass.InsertDebugMarker("bind resources")
 	pass.SetPipeline(pipeline)
 	pass.SetBindGroup(0, group)
 	pass.SetVertexBuffer(0, vertices, 0, 0)
 	pass.SetIndexBuffer(indices, native.IndexFormatUint16, 0, 0)
+	pass.InsertDebugMarker("draw")
 	pass.DrawIndexed(3, 1, 0, 0, 0)
+	pass.PopDebugGroup()
 	pass.End()
 	pass.Release()
+	enc.PopDebugGroup()
 	commands, err := enc.Finish()
 	if err != nil {
 		return err

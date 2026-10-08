@@ -35,6 +35,9 @@ const (
 	opDrawIndexed
 	opDrawIndirect
 	opDrawIndexedIndirect
+	opPushDebugGroup
+	opPopDebugGroup
+	opInsertDebugMarker
 )
 
 type bundleCmd struct {
@@ -48,6 +51,7 @@ type bundleCmd struct {
 	d        uint32
 	base     int32
 	off, sz  uint64
+	label    string
 }
 
 // RenderBundleEncoder records draw commands for a reusable RenderBundle.
@@ -62,6 +66,8 @@ type RenderBundleEncoder struct {
 	cmds []bundleCmd
 	err  error
 	done bool
+
+	debugDepth int
 }
 
 // CreateRenderBundleEncoder starts recording a render bundle. Release the
@@ -177,6 +183,9 @@ type renderRecorder interface {
 	drawIndexed(a, b, c uint32, base int32, d uint32)
 	drawIndirect(native.Buffer, uint64)
 	drawIndexedIndirect(native.Buffer, uint64)
+	pushDebugGroup(string)
+	popDebugGroup()
+	insertDebugMarker(string)
 }
 
 type passRecorder native.RenderPassEncoder
@@ -272,6 +281,12 @@ func (e *RenderBundleEncoder) replay(r renderRecorder) {
 			r.drawIndirect(c.buf.Native(), c.off)
 		case opDrawIndexedIndirect:
 			r.drawIndexedIndirect(c.buf.Native(), c.off)
+		case opPushDebugGroup:
+			r.pushDebugGroup(c.label)
+		case opPopDebugGroup:
+			r.popDebugGroup()
+		case opInsertDebugMarker:
+			r.insertDebugMarker(c.label)
 		}
 	}
 }
@@ -404,6 +419,9 @@ func (e *RenderBundleEncoder) Finish() (*RenderBundle, error) {
 		return fail("encoder already finished", "")
 	}
 	e.done = true
+	if e.err == nil && e.debugDepth > 0 {
+		e.fail(openGroupsStatus(e.debugDepth))
+	}
 	if e.err != nil {
 		return nil, e.err
 	}

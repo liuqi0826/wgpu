@@ -92,6 +92,9 @@ type ComputePassDescriptor struct {
 // ComputePassEncoder records dispatches. Call End, then Release.
 type ComputePassEncoder struct {
 	ptr atomic.Uintptr
+	enc *CommandEncoder
+
+	debugDepth int
 }
 
 // BeginComputePass starts a compute pass. desc may be nil.
@@ -110,7 +113,7 @@ func (e *CommandEncoder) BeginComputePass(desc *ComputePassDescriptor) (*Compute
 	if handle == 0 {
 		return nil, &Error{Op: "CommandEncoderBeginComputePass", Status: "null encoder"}
 	}
-	pass := &ComputePassEncoder{}
+	pass := &ComputePassEncoder{enc: e}
 	pass.ptr.Store(uintptr(handle))
 	return pass, nil
 }
@@ -150,8 +153,13 @@ func (p *ComputePassEncoder) DispatchWorkgroupsIndirect(buf *Buffer, offset uint
 	native.ComputePassEncoderDispatchWorkgroupsIndirect(p.Native(), buf.Native(), offset)
 }
 
-// End finishes recording the pass.
+// End finishes recording the pass. Debug groups still open make
+// CommandEncoder.Finish fail.
 func (p *ComputePassEncoder) End() {
+	if p.debugDepth > 0 {
+		p.enc.setErr("ComputePassEncoderEnd", openGroupsStatus(p.debugDepth))
+		p.debugDepth = 0
+	}
 	native.ComputePassEncoderEnd(p.Native())
 }
 
