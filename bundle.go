@@ -38,6 +38,7 @@ const (
 	opPushDebugGroup
 	opPopDebugGroup
 	opInsertDebugMarker
+	opSetImmediates
 )
 
 type bundleCmd struct {
@@ -52,6 +53,7 @@ type bundleCmd struct {
 	base     int32
 	off, sz  uint64
 	label    string
+	data     []byte
 }
 
 // RenderBundleEncoder records draw commands for a reusable RenderBundle.
@@ -186,6 +188,7 @@ type renderRecorder interface {
 	pushDebugGroup(string)
 	popDebugGroup()
 	insertDebugMarker(string)
+	setImmediates(uint32, []byte)
 }
 
 type passRecorder native.RenderPassEncoder
@@ -287,6 +290,8 @@ func (e *RenderBundleEncoder) replay(r renderRecorder) {
 			r.popDebugGroup()
 		case opInsertDebugMarker:
 			r.insertDebugMarker(c.label)
+		case opSetImmediates:
+			r.setImmediates(c.a, c.data)
 		}
 	}
 }
