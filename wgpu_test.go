@@ -3,6 +3,7 @@
 package wgpu
 
 import (
+	"bytes"
 	"testing"
 
 	"wgpu/native"
@@ -77,6 +78,17 @@ func TestNoCGOInstanceDeviceAndShader(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer readable.Release()
+	encoder, err := device.CreateCommandEncoder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoder.CopyBufferToBuffer(buffer, 0, readable, 0, 4)
+	commands, err := encoder.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	device.Queue().Submit(commands)
+	commands.Release()
 	if err := readable.Map(native.MapModeRead, 0, 4); err != nil {
 		t.Fatal(err)
 	}
@@ -84,10 +96,10 @@ func TestNoCGOInstanceDeviceAndShader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 4 {
-		t.Fatalf("read %d bytes", len(got))
-	}
 	readable.Unmap()
+	if want := []byte{0x44, 0x33, 0x22, 0x11}; !bytes.Equal(got, want) {
+		t.Fatalf("readback = % x, want % x", got, want)
+	}
 
 	module, err := device.CreateShaderModuleWGSL("test", `
 @compute @workgroup_size(1)
