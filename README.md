@@ -277,6 +277,8 @@ if adapter.HasFeature(wgpu.FeaturePipelineStatisticsQuery) {
   | `PushErrorScope` 用 `Internal` 过滤器 | 终止进程 | Go 侧 panic |
   | 任何 `wgpuXxxSetLabel` | 终止进程（`unimplemented!()`） | 不提供 `SetLabel` |
   | `CreateQuerySet` 用未知查询类型、统计查询没有统计项列表或含未知统计项 | 终止进程 | Go 侧返回错误 |
+  | 遮挡查询没关、嵌套、没有 Begin 就 End、query index 越界或在同一 pass 内重复使用、pass 没设 `OcclusionQuerySet` 就 Begin | 不终止进程，也不会漏检带进提交：记一个验证错误，`Finish` 时报出，但对外只有笼统的 `Validation Error` | Go 侧跟踪每个 pass 的遮挡查询状态，有问题的 Begin/End 不下发给 native，`Finish` 返回具体原因（例如 `occlusion query 1 still active`）；`OcclusionQuerySet` 不是遮挡类型时 `BeginRenderPass` 直接返回错误。同一 index 在后续 pass 里可以再用 |
+  | compute pass 结束时 pipeline statistics 查询没关 | wgpu-core 不检查，会带进提交 | Go 侧跟踪 Begin/End，`Finish` 返回错误 |
 
   仍然没有拦截、会终止进程的情况：
   - 提交时才发现的问题，例如命令缓冲区引用的缓冲区在提交时仍处于映射状态或已经被销毁；

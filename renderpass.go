@@ -4,6 +4,7 @@ package wgpu
 
 import (
 	"runtime"
+	"strconv"
 	"sync/atomic"
 	"unsafe"
 
@@ -52,6 +53,12 @@ type RenderPassEncoder struct {
 
 	debugDepth  int
 	statsActive bool
+
+	// Occlusion query tracking, see BeginOcclusionQuery.
+	occlusionSet    *QuerySet
+	occlusionActive bool
+	occlusionIndex  uint32
+	occlusionUsed   map[uint32]bool
 }
 
 // BeginRenderPass starts a render pass.
@@ -61,6 +68,9 @@ func (e *CommandEncoder) BeginRenderPass(desc *RenderPassDescriptor) (*RenderPas
 	}
 	if desc.OcclusionQuerySet != nil && desc.OcclusionQuerySet.Native() == 0 {
 		return nil, &Error{Op: "CommandEncoderBeginRenderPass", Status: "released occlusion query set"}
+	}
+	if desc.OcclusionQuerySet != nil && desc.OcclusionQuerySet.typ != native.QueryTypeOcclusion {
+		return nil, &Error{Op: "CommandEncoderBeginRenderPass", Status: "OcclusionQuerySet is not an occlusion query set"}
 	}
 	var m cmem
 	writes, err := desc.TimestampWrites.raw(&m, "CommandEncoderBeginRenderPass")
@@ -108,7 +118,7 @@ func (e *CommandEncoder) BeginRenderPass(desc *RenderPassDescriptor) (*RenderPas
 	if handle == 0 {
 		return nil, &Error{Op: "CommandEncoderBeginRenderPass", Status: "null encoder"}
 	}
-	pass := &RenderPassEncoder{enc: e}
+	pass := &RenderPassEncoder{enc: e, occlusionSet: desc.OcclusionQuerySet}
 	pass.ptr.Store(uintptr(handle))
 	return pass, nil
 }
@@ -228,6 +238,10 @@ func (p *RenderPassEncoder) End() {
 	if p.statsActive {
 		p.enc.setErr("RenderPassEncoderEnd", "pipeline statistics query still active")
 		p.statsActive = false
+	}
+	if p.occlusionActive {
+		p.enc.setErr("RenderPassEncoderEnd", "occlusion query "+strconv.FormatUint(uint64(p.occlusionIndex), 10)+" still active")
+		p.occlusionActive = false
 	}
 	native.RenderPassEncoderEnd(p.Native())
 }

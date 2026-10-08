@@ -32,6 +32,7 @@ type QuerySetDescriptor struct {
 type QuerySet struct {
 	ptr   atomic.Uintptr
 	typ   native.QueryType
+	count uint32
 	stats []native.PipelineStatisticName
 }
 
@@ -84,7 +85,7 @@ func (d *Device) CreateQuerySet(desc *QuerySetDescriptor) (*QuerySet, error) {
 	if handle == 0 {
 		return nil, d.fail("CreateQuerySet")
 	}
-	q := &QuerySet{typ: desc.Type, stats: stats}
+	q := &QuerySet{typ: desc.Type, count: desc.Count, stats: stats}
 	q.ptr.Store(uintptr(handle))
 	return q, nil
 }
@@ -166,13 +167,55 @@ func (e *CommandEncoder) WriteTimestamp(q *QuerySet, index uint32) {
 // BeginOcclusionQuery starts occlusion query index of the pass's
 // OcclusionQuerySet. The result counts samples that passed the depth and
 // stencil tests; it is only guaranteed to be zero or non-zero.
+//
+// The rules are checked on the Go side and a broken one is recorded for
+// CommandEncoder.Finish instead of being sent to wgpu-native: the pass needs
+// an OcclusionQuerySet, index must be in range and unused in this pass (it
+// may be reused in a later pass), queries cannot nest, and each one must be
+// ended with EndOcclusionQuery before the pass ends.
 func (p *RenderPassEncoder) BeginOcclusionQuery(index uint32) {
+	const op = "RenderPassEncoderBeginOcclusionQuery"
+	q := p.occlusionSet
+	switch {
+	case p.Native() == 0:
+		return
+	case q == nil:
+		p.enc.setErr(op, "render pass has no OcclusionQuerySet")
+		return
+	case q.Native() == 0:
+		p.enc.setErr(op, "occlusion query set was released")
+		return
+	case p.occlusionActive:
+		p.enc.setErr(op, "occlusion query "+strconv.FormatUint(uint64(p.occlusionIndex), 10)+" already active")
+		return
+	case index >= q.count:
+		p.enc.setErr(op, "query index "+strconv.FormatUint(uint64(index), 10)+" out of range for a query set of "+strconv.FormatUint(uint64(q.count), 10))
+		return
+	case p.occlusionUsed[index]:
+		p.enc.setErr(op, "query index "+strconv.FormatUint(uint64(index), 10)+" already used in this render pass")
+		return
+	}
 	native.RenderPassEncoderBeginOcclusionQuery(p.Native(), index)
+	if p.occlusionUsed == nil {
+		p.occlusionUsed = make(map[uint32]bool)
+	}
+	p.occlusionUsed[index] = true
+	p.occlusionActive = true
+	p.occlusionIndex = index
 }
 
-// EndOcclusionQuery ends the current occlusion query.
+// EndOcclusionQuery ends the current occlusion query. Ending with no active
+// query records an error for CommandEncoder.Finish.
 func (p *RenderPassEncoder) EndOcclusionQuery() {
+	if p.Native() == 0 {
+		return
+	}
+	if !p.occlusionActive {
+		p.enc.setErr("RenderPassEncoderEndOcclusionQuery", "no active occlusion query")
+		return
+	}
 	native.RenderPassEncoderEndOcclusionQuery(p.Native())
+	p.occlusionActive = false
 }
 
 // TimestampPeriod returns nanoseconds per timestamp tick. wgpu normalizes
