@@ -62,7 +62,13 @@ func run(n int) error {
 		return err
 	}
 	fmt.Printf("adapter: %s (%s, %s)\n", info.Device, info.Backend, info.Type)
-	device, err := adapter.RequestDevice()
+	// GPU timing needs the TimestampQuery feature; without it only wall time is printed.
+	timestamps := adapter.HasFeature(native.FeatureNameTimestampQuery)
+	opts := &wgpu.DeviceOptions{}
+	if timestamps {
+		opts.RequiredFeatures = []native.FeatureName{native.FeatureNameTimestampQuery}
+	}
+	device, err := adapter.RequestDeviceWith(opts)
 	if err != nil {
 		return err
 	}
@@ -108,6 +114,26 @@ func run(n int) error {
 		return err
 	}
 	defer group.Release()
+	var (
+		queries         *wgpu.QuerySet
+		resolve, stamps *wgpu.Buffer
+		timestampWrites *wgpu.PassTimestampWrites
+	)
+	if timestamps {
+		if queries, err = device.CreateQuerySet(&wgpu.QuerySetDescriptor{Label: "pass time", Type: native.QueryTypeTimestamp, Count: 2}); err != nil {
+			return err
+		}
+		defer queries.Release()
+		if resolve, err = device.CreateBuffer(native.BufferUsageQueryResolve|native.BufferUsageCopySrc, 16, false); err != nil {
+			return err
+		}
+		defer resolve.Release()
+		if stamps, err = device.CreateBuffer(native.BufferUsageMapRead|native.BufferUsageCopyDst, 16, false); err != nil {
+			return err
+		}
+		defer stamps.Release()
+		timestampWrites = &wgpu.PassTimestampWrites{QuerySet: queries, BeginningOfPassWriteIndex: 0, EndOfPassWriteIndex: 1}
+	}
 	if err := device.PopErrorScope(); err != nil {
 		return fmt.Errorf("setup: %w", err)
 	}
@@ -129,7 +155,7 @@ func run(n int) error {
 	if err != nil {
 		return err
 	}
-	pass, err := enc.BeginComputePass(nil)
+	pass, err := enc.BeginComputePass(&wgpu.ComputePassDescriptor{Label: "double", TimestampWrites: timestampWrites})
 	if err != nil {
 		enc.Release()
 		return err
@@ -140,6 +166,10 @@ func run(n int) error {
 	pass.End()
 	pass.Release()
 	enc.CopyBufferToBuffer(storage, 0, readback, 0, size)
+	if timestamps {
+		enc.ResolveQuerySet(queries, 0, 2, resolve, 0)
+		enc.CopyBufferToBuffer(resolve, 0, stamps, 0, 16)
+	}
 	commands, err := enc.Finish()
 	if err != nil {
 		return err
@@ -161,6 +191,21 @@ func run(n int) error {
 		}
 	}
 	fmt.Printf("doubled %d elements (%d workgroups as %dx%d) in %v including readback\n", n, groups, gx, gy, elapsed.Round(time.Microsecond))
+	if timestamps {
+		if err := stamps.Map(native.MapModeRead, 0, 16); err != nil {
+			return err
+		}
+		raw, err := stamps.ReadMapped(0, 16)
+		stamps.Unmap()
+		if err != nil {
+			return err
+		}
+		begin, end := binary.LittleEndian.Uint64(raw[0:]), binary.LittleEndian.Uint64(raw[8:])
+		gpu := time.Duration(float64(end-begin) * float64(queue.TimestampPeriod()))
+		fmt.Printf("gpu time: %v (compute pass, timestamp query)\n", gpu)
+	} else {
+		fmt.Println("gpu time: unavailable (adapter has no TimestampQuery)")
+	}
 	fmt.Printf("first: %d %d %d %d, last: %d\n",
 		binary.LittleEndian.Uint32(out[0:]), binary.LittleEndian.Uint32(out[4:]),
 		binary.LittleEndian.Uint32(out[8:]), binary.LittleEndian.Uint32(out[12:]),

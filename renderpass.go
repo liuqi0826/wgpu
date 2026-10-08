@@ -41,6 +41,8 @@ type RenderPassDescriptor struct {
 	Label                  string
 	ColorAttachments       []RenderPassColorAttachment
 	DepthStencilAttachment *RenderPassDepthStencilAttachment
+	OcclusionQuerySet      *QuerySet
+	TimestampWrites        *PassTimestampWrites
 }
 
 // RenderPassEncoder records draw commands. Call End, then Release.
@@ -54,8 +56,19 @@ func (e *CommandEncoder) BeginRenderPass(desc *RenderPassDescriptor) (*RenderPas
 	if desc == nil {
 		desc = &RenderPassDescriptor{}
 	}
+	if desc.OcclusionQuerySet != nil && desc.OcclusionQuerySet.Native() == 0 {
+		return nil, &Error{Op: "CommandEncoderBeginRenderPass", Status: "released occlusion query set"}
+	}
 	var m cmem
-	raw := cnew(&m, native.RenderPassDescriptor{Label: m.str(desc.Label)})
+	writes, err := desc.TimestampWrites.raw(&m, "CommandEncoderBeginRenderPass")
+	if err != nil {
+		return nil, err
+	}
+	raw := cnew(&m, native.RenderPassDescriptor{
+		Label:             m.str(desc.Label),
+		OcclusionQuerySet: desc.OcclusionQuerySet.Native(),
+		TimestampWrites:   writes,
+	})
 	if n := len(desc.ColorAttachments); n > 0 {
 		atts := cslice[native.RenderPassColorAttachment](&m, n)
 		for i, a := range desc.ColorAttachments {

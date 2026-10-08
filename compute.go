@@ -85,7 +85,8 @@ func (p *ComputePipeline) Release() {
 
 // ComputePassDescriptor describes CommandEncoder.BeginComputePass.
 type ComputePassDescriptor struct {
-	Label string
+	Label           string
+	TimestampWrites *PassTimestampWrites
 }
 
 // ComputePassEncoder records dispatches. Call End, then Release.
@@ -98,7 +99,11 @@ func (e *CommandEncoder) BeginComputePass(desc *ComputePassDescriptor) (*Compute
 	var m cmem
 	var raw *native.ComputePassDescriptor
 	if desc != nil {
-		raw = cnew(&m, native.ComputePassDescriptor{Label: m.str(desc.Label)})
+		writes, err := desc.TimestampWrites.raw(&m, "CommandEncoderBeginComputePass")
+		if err != nil {
+			return nil, err
+		}
+		raw = cnew(&m, native.ComputePassDescriptor{Label: m.str(desc.Label), TimestampWrites: writes})
 	}
 	handle := native.CommandEncoderBeginComputePass(e.Native(), raw)
 	m.done()
