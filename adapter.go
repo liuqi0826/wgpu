@@ -62,17 +62,66 @@ func (a *Adapter) Info() (AdapterInfo, error) {
 	return info, nil
 }
 
-// RequestDevice creates a device and waits until it is ready.
-// Device-lost and uncaptured-error callbacks are installed so wgpu-native
-// does not treat those events as fatal.
+// Limits returns the best limits the adapter supports.
+func (a *Adapter) Limits() (native.Limits, error) {
+	var limits native.Limits
+	if status := native.AdapterGetLimits(a.Native(), &limits); status != native.StatusSuccess {
+		return native.Limits{}, &Error{Op: "AdapterGetLimits", Status: status.String()}
+	}
+	return limits, nil
+}
+
+// Features lists the features the adapter supports.
+func (a *Adapter) Features() []native.FeatureName {
+	var raw native.SupportedFeatures
+	native.AdapterGetFeatures(a.Native(), &raw)
+	out := readSlice[native.FeatureName](raw.Features, raw.FeatureCount)
+	native.SupportedFeaturesFreeMembers(raw)
+	return out
+}
+
+// HasFeature reports whether the adapter supports f.
+func (a *Adapter) HasFeature(f native.FeatureName) bool {
+	return native.AdapterHasFeature(a.Native(), f) == native.True
+}
+
+// DeviceOptions configures Adapter.RequestDeviceWith.
+//
+// OnLost and OnUncapturedError run on a goroutine owned by the device, in the
+// order the events arrived, never inside a native call. They are not called
+// for the destruction caused by Device.Release or for events after Release.
+// Device.Lost and Device.Err are updated before the callbacks run.
+type DeviceOptions struct {
+	Label string
+	// RequiredFeatures must be a subset of Adapter.Features.
+	RequiredFeatures []native.FeatureName
+	// RequiredLimits nil uses the default limits. Start from Adapter.Limits
+	// or UndefinedLimits; a zero field is a real zero limit.
+	RequiredLimits    *native.Limits
+	OnLost            func(reason native.DeviceLostReason, message string)
+	OnUncapturedError func(typ native.ErrorType, message string)
+}
+
+// RequestDevice creates a device with default options.
 func (a *Adapter) RequestDevice() (*Device, error) {
+	return a.RequestDeviceWith(nil)
+}
+
+// RequestDeviceWith creates a device and waits until it is ready.
+// Device-lost and uncaptured-error callbacks are always installed so
+// wgpu-native does not treat those events as fatal.
+func (a *Adapter) RequestDeviceWith(opts *DeviceOptions) (*Device, error) {
 	ensureCallbacks()
-	state := &deviceState{}
+	if opts == nil {
+		opts = &DeviceOptions{}
+	}
+	state := &deviceState{onLost: opts.OnLost, onError: opts.OnUncapturedError}
 	slot := uintptr(waiterSeq.Add(1))
 	deviceStates.Store(slot, state)
 
-	id, _ := newWaiter(&deviceWaiters)
-	desc := native.DeviceDescriptor{
+	var m cmem
+	desc := cnew(&m, native.DeviceDescriptor{
+		Label: m.str(opts.Label),
 		DeviceLostCallbackInfo: native.DeviceLostCallbackInfo{
 			Mode:      native.CallbackModeAllowSpontaneous,
 			Callback:  native.DeviceLostCallback(lostCB),
@@ -82,15 +131,30 @@ func (a *Adapter) RequestDevice() (*Device, error) {
 			Callback:  native.UncapturedErrorCallback(errorCB),
 			Userdata1: slot,
 		},
+	})
+	if n := len(opts.RequiredFeatures); n > 0 {
+		features := cslice[native.FeatureName](&m, n)
+		copy(features, opts.RequiredFeatures)
+		desc.RequiredFeatureCount = uintptr(n)
+		desc.RequiredFeatures = sliceAddr(features)
 	}
+	if opts.RequiredLimits != nil {
+		limits := cnew(&m, *opts.RequiredLimits)
+		limits.NextInChain = 0
+		desc.RequiredLimits = addr(limits)
+	}
+
+	id, _ := newWaiter(&deviceWaiters)
 	info := native.RequestDeviceCallbackInfo{
 		Mode:      native.CallbackModeWaitAnyOnly,
 		Callback:  native.RequestDeviceCallback(deviceCB),
 		Userdata1: id,
 	}
-	native.AdapterRequestDevice(a.Native(), &desc, info)
+	native.AdapterRequestDevice(a.Native(), desc, info)
+	m.done()
 	res, ok := tryTake(&deviceWaiters, id)
 	if !ok {
+		deviceWaiters.Delete(id)
 		deviceStates.Delete(slot)
 		return nil, &Error{Op: "RequestDevice", Status: "callback was not invoked"}
 	}

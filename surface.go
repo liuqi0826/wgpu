@@ -69,7 +69,13 @@ type SurfaceConfig struct {
 
 // ConfigureWith connects the surface to a device with explicit options.
 // Call it again after the window size changes.
+//
+// It does nothing on a lost device, because wgpu-native aborts the process
+// when configuration fails.
 func (s *Surface) ConfigureWith(device *Device, cfg SurfaceConfig) {
+	if device.isLost() {
+		return
+	}
 	var m cmem
 	raw := cnew(&m, native.SurfaceConfiguration{
 		Device:      device.Native(),

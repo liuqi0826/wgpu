@@ -59,6 +59,9 @@ func (b *Buffer) ReadMapped(offset, size uint64) ([]byte, error) {
 
 // Map waits until the requested range is mapped.
 func (b *Buffer) Map(mode native.MapMode, offset, size uint64) error {
+	if b.dev.isLost() {
+		return b.dev.Err()
+	}
 	ensureCallbacks()
 	id, _ := newWaiter(&mapWaiters)
 	info := native.BufferMapCallbackInfo{
