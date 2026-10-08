@@ -46,6 +46,7 @@ type RenderPassDescriptor struct {
 // RenderPassEncoder records draw commands. Call End, then Release.
 type RenderPassEncoder struct {
 	ptr atomic.Uintptr
+	enc *CommandEncoder
 }
 
 // BeginRenderPass starts a render pass.
@@ -91,7 +92,7 @@ func (e *CommandEncoder) BeginRenderPass(desc *RenderPassDescriptor) (*RenderPas
 	if handle == 0 {
 		return nil, &Error{Op: "CommandEncoderBeginRenderPass", Status: "null encoder"}
 	}
-	pass := &RenderPassEncoder{}
+	pass := &RenderPassEncoder{enc: e}
 	pass.ptr.Store(uintptr(handle))
 	return pass, nil
 }
@@ -104,9 +105,42 @@ func (p *RenderPassEncoder) Native() native.RenderPassEncoder {
 	return native.RenderPassEncoder(p.ptr.Load())
 }
 
-// SetPipeline selects the render pipeline.
+// SetPipeline selects the render pipeline. A nil or released pipeline is
+// reported by CommandEncoder.Finish.
 func (p *RenderPassEncoder) SetPipeline(pipeline *RenderPipeline) {
+	if pipeline.Native() == 0 {
+		p.enc.setErr("RenderPassEncoderSetPipeline", "nil or released pipeline")
+		return
+	}
 	native.RenderPassEncoderSetPipeline(p.Native(), pipeline.Native())
+}
+
+// ExecuteBundles replays render bundles in this pass. A nil or released
+// bundle is reported by CommandEncoder.Finish and nothing is executed.
+func (p *RenderPassEncoder) ExecuteBundles(bundles ...*RenderBundle) {
+	if len(bundles) == 0 {
+		return
+	}
+	raw := escape(make([]native.RenderBundle, len(bundles)))
+	for i, b := range bundles {
+		raw[i] = b.Native()
+		if raw[i] == 0 {
+			p.enc.setErr("RenderPassEncoderExecuteBundles", "nil or released bundle")
+			return
+		}
+	}
+	native.RenderPassEncoderExecuteBundles(p.Native(), uintptr(len(raw)), &raw[0])
+	runtime.KeepAlive(raw)
+}
+
+// DrawIndirect draws with arguments read from buf at offset.
+func (p *RenderPassEncoder) DrawIndirect(buf *Buffer, offset uint64) {
+	native.RenderPassEncoderDrawIndirect(p.Native(), buf.Native(), offset)
+}
+
+// DrawIndexedIndirect draws indexed primitives with arguments read from buf.
+func (p *RenderPassEncoder) DrawIndexedIndirect(buf *Buffer, offset uint64) {
+	native.RenderPassEncoderDrawIndexedIndirect(p.Native(), buf.Native(), offset)
 }
 
 // SetBindGroup binds group at index with optional dynamic offsets.

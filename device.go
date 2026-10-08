@@ -315,6 +315,14 @@ func (m *ShaderModule) Release() {
 type CommandEncoder struct {
 	dev *Device
 	ptr atomic.Uintptr
+	err error
+}
+
+// setErr records the first error found on the Go side; Finish returns it.
+func (e *CommandEncoder) setErr(op, status string) {
+	if e != nil && e.err == nil {
+		e.err = &Error{Op: op, Status: status}
+	}
 }
 
 // Native returns the raw encoder handle.
@@ -334,6 +342,10 @@ func (e *CommandEncoder) Finish() (*CommandBuffer, error) {
 	handle := native.CommandEncoder(e.ptr.Swap(0))
 	if handle == 0 {
 		return nil, &Error{Op: "CommandEncoderFinish", Status: "encoder already finished or released"}
+	}
+	if e.err != nil {
+		native.CommandEncoderRelease(handle)
+		return nil, e.err
 	}
 	var raw native.CommandBuffer
 	err := e.dev.guard(func() { raw = native.CommandEncoderFinish(handle, nil) })
