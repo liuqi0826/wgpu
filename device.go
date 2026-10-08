@@ -144,6 +144,9 @@ func (d *Device) CreateBuffer(usage native.BufferUsage, size uint64, mapped bool
 	}
 	buf := &Buffer{dev: d, size: size}
 	buf.ptr.Store(uintptr(handle))
+	if mapped {
+		buf.state, buf.writable, buf.end = mapActive, true, size
+	}
 	return buf, nil
 }
 
