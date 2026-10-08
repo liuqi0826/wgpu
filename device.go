@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 // Device is a WGPUDevice and the queue returned with it.

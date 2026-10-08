@@ -2,12 +2,23 @@
 
 // Package wgpu 是 wgpu-native 的 Go 绑定，不使用 CGO。
 //
+//	import "github.com/liuqi0826/wgpu"
+//
 // 动态库通过 syscall.LoadLibrary 加载，函数调用走 purego。完整的 C API
 // 在 native 包里，类型和函数与 webgpu.h / wgpu.h（wgpu 29）一一对应。
 // 本包在此之上提供创建实例、枚举适配器、请求设备、缓冲区、着色器和窗口表面的常用路径，
-// 以及纹理、采样器、绑定组、渲染管线、RenderPass 和拷贝命令。描述符用 Go 结构体表示，
-// 零值字段取 WebGPU 的常用默认值，内部负责组装 native 结构体和 StringView。
-// 窗口渲染示例见 example/triangle。
+// 以及纹理、采样器、绑定组、渲染管线、计算管线、RenderPass、ComputePass 和拷贝命令。
+// 描述符用 Go 结构体表示，零值字段取 WebGPU 的常用默认值，内部负责组装 native 结构体和 StringView。
+// 示例见 example/triangle、example/textured 和 example/compute。
+//
+// 后端用 InstanceOptions.Backends 选择，ParseBackends 和 BackendsFromEnv
+// 可以把 vulkan、dx12、gl 这样的名字（或环境变量 WGPU_BACKEND）转成对应的位。
+//
+// RequestDeviceWith 接受 DeviceOptions：OnLost、OnUncapturedError 回调，以及
+// RequiredLimits、RequiredFeatures。回调按顺序在设备自己的 goroutine 上执行，可以再调用本包；
+// Device.Release 之后不再触发。wgpu-native 29 不转发设备丢失事件，Device.Destroy
+// 由 Go 侧记录丢失并触发 OnLost。wgpu-native 在 QueueSubmit、SurfaceConfigure 等调用
+// 失败时会直接终止进程，所以设备丢失后这些方法什么也不做，用 Device.Lost 或 Device.Err 查询状态。
 //
 // 当前这份 wgpu-native 会在请求适配器、请求设备和弹出错误域时同步调用回调，
 // 并且没有实现 wgpuInstanceWaitAny，所以这些调用不会进入 WaitAny。

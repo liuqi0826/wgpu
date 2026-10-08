@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 const doubleWGSL = `

@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 // Surface presents to a native window.

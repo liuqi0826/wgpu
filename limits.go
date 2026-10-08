@@ -5,7 +5,7 @@ package wgpu
 import (
 	"reflect"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 // UndefinedLimits returns limits with every field undefined, which requests

@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 // BackendEnv is the environment variable read by BackendsFromEnv.

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 func newTestAdapter(t *testing.T) *Adapter {

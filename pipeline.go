@@ -5,7 +5,7 @@ package wgpu
 import (
 	"sync/atomic"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 // BufferBinding is a buffer slot in a bind group layout. A zero Type is unused.

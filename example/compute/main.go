@@ -12,8 +12,8 @@ import (
 	"os"
 	"time"
 
-	"wgpu"
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 const shaderWGSL = `

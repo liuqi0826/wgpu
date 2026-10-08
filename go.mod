@@ -1,4 +1,4 @@
-module wgpu
+module github.com/liuqi0826/wgpu
 
 go 1.26.8
 

@@ -5,7 +5,7 @@ package wgpu
 import (
 	"sync/atomic"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 // TextureDescriptor describes Device.CreateTexture. Zero Dimension,

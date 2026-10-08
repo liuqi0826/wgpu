@@ -8,7 +8,7 @@ import (
 	"time"
 	"unsafe"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 // Buffer is a WGPUBuffer.

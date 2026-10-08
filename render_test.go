@@ -8,7 +8,7 @@ import (
 	"math"
 	"testing"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 func newTestDevice(t *testing.T) *Device {

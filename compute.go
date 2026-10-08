@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"sync/atomic"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 // ComputeState is the compute stage. An empty EntryPoint picks the only

@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 // Native structs store pointers as uintptr. Escape analysis does not follow

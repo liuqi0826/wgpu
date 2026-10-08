@@ -15,9 +15,9 @@ import (
 	"runtime"
 	"time"
 
-	"wgpu"
-	"wgpu/example/internal/win32"
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu"
+	"github.com/liuqi0826/wgpu/example/internal/win32"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 func init() {

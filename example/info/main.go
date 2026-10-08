@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	"wgpu"
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 var backendFlag = flag.String("backend", os.Getenv(wgpu.BackendEnv), "backends: vulkan, dx12, gl or all (default $WGPU_BACKEND)")

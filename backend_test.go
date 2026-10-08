@@ -5,7 +5,7 @@ package wgpu
 import (
 	"testing"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 // testInstance honours WGPU_BACKEND=vulkan|dx12|gl and defaults to the

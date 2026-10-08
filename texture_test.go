@@ -5,7 +5,7 @@ package wgpu
 import (
 	"testing"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 const sampleWGSL = `

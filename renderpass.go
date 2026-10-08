@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 // RenderPassColorAttachment is one color target of a render pass.

@@ -9,7 +9,7 @@ import (
 
 	"github.com/ebitengine/purego"
 
-	"wgpu/native"
+	"github.com/liuqi0826/wgpu/native"
 )
 
 type callbackResult struct {

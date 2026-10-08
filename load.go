@@ -2,7 +2,7 @@
 
 package wgpu
 
-import "wgpu/native"
+import "github.com/liuqi0826/wgpu/native"
 
 // Load loads wgpu_native.dll. An empty path uses the default search.
 func Load(path string) error {
