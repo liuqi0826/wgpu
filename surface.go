@@ -12,6 +12,10 @@ import (
 // Surface presents to a native window.
 type Surface struct {
 	ptr atomic.Uintptr
+	// dev is the device of the last successful configuration, nil when the
+	// surface is not configured. wgpu-native aborts on GetCurrentTexture of
+	// an unconfigured surface.
+	dev atomic.Pointer[Device]
 }
 
 // Native returns the raw surface handle.
@@ -94,6 +98,7 @@ func (s *Surface) ConfigureWith(device *Device, cfg SurfaceConfig) {
 	}
 	native.SurfaceConfigure(s.Native(), raw)
 	m.done()
+	s.dev.Store(device)
 }
 
 // Configure connects the surface to a device with Fifo presentation and an
@@ -110,12 +115,19 @@ func (s *Surface) Configure(device *Device, format native.TextureFormat, width, 
 
 // Unconfigure detaches the surface from its device.
 func (s *Surface) Unconfigure() {
+	s.dev.Store(nil)
 	native.SurfaceUnconfigure(s.Native())
 }
 
 // CurrentTexture acquires the next swapchain texture as a raw handle.
 // The caller must Release the texture after Present. See GetCurrentTexture.
+//
+// It returns status Error without calling wgpu-native when the surface is
+// not configured or its device is lost, because wgpu-native aborts then.
 func (s *Surface) CurrentTexture() (native.Texture, native.SurfaceGetCurrentTextureStatus) {
+	if dev := s.dev.Load(); dev == nil || dev.isLost() || dev.Native() == 0 {
+		return 0, native.SurfaceGetCurrentTextureStatusError
+	}
 	var tex native.SurfaceTexture
 	native.SurfaceGetCurrentTexture(s.Native(), &tex)
 	return tex.Texture, tex.Status
