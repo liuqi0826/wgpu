@@ -1,13 +1,16 @@
 //go:build windows && amd64
 
-package main
+// Package win32 is a minimal Win32 window for the examples. It uses syscall
+// only, without CGO or x/sys. Create, pump and destroy a window from one OS
+// thread; call runtime.LockOSThread in an init function.
+package win32
 
 import (
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
-
-// Minimal Win32 window through syscall; no CGO and no x/sys.
 
 var (
 	user32   = syscall.NewLazyDLL("user32.dll")
@@ -74,21 +77,29 @@ type winMsg struct {
 
 type rect struct{ Left, Top, Right, Bottom int32 }
 
-type window struct {
-	hwnd      uintptr
-	hinstance uintptr
+// Window is a top-level window with a client area for a surface.
+type Window struct {
+	HWND      uintptr
+	HInstance uintptr
+	resized   atomic.Bool
 }
 
-// resized is set by WM_SIZE. The window procedure runs on the thread that
-// pumps messages, which is the locked main thread.
-var resized bool
+var (
+	classOnce sync.Once
+	classErr  error
+	className *uint16
+	windows   sync.Map // HWND -> *Window
+)
 
 func wndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
 	switch uint32(msg) {
 	case wmSize:
-		resized = true
+		if v, ok := windows.Load(hwnd); ok {
+			v.(*Window).resized.Store(true)
+		}
 		return 0
 	case wmDestroy:
+		windows.Delete(hwnd)
 		procPostQuitMessage.Call(0)
 		return 0
 	}
@@ -96,23 +107,33 @@ func wndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
 	return r
 }
 
-func createWindow(title string, width, height int32) (*window, error) {
+func registerClass(hinst uintptr) error {
+	classOnce.Do(func() {
+		className, _ = syscall.UTF16PtrFromString("wgpuExampleWindow")
+		cursor, _, _ := procLoadCursorW.Call(0, idcArrow)
+		wc := wndClassEx{
+			Style:     csHRedraw | csVRedraw,
+			WndProc:   syscall.NewCallback(wndProc),
+			Instance:  hinst,
+			Cursor:    cursor,
+			ClassName: className,
+		}
+		wc.Size = uint32(unsafe.Sizeof(wc))
+		if atom, _, err := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); atom == 0 {
+			classErr = err
+		}
+	})
+	return classErr
+}
+
+// CreateWindow opens a visible window whose client area is width x height.
+func CreateWindow(title string, width, height int32) (*Window, error) {
 	hinst, _, _ := procGetModuleHandleW.Call(0)
-	className, _ := syscall.UTF16PtrFromString("wgpuTriangleWindow")
-	titlePtr, err := syscall.UTF16PtrFromString(title)
-	if err != nil {
+	if err := registerClass(hinst); err != nil {
 		return nil, err
 	}
-	cursor, _, _ := procLoadCursorW.Call(0, idcArrow)
-	wc := wndClassEx{
-		Style:     csHRedraw | csVRedraw,
-		WndProc:   syscall.NewCallback(wndProc),
-		Instance:  hinst,
-		Cursor:    cursor,
-		ClassName: className,
-	}
-	wc.Size = uint32(unsafe.Sizeof(wc))
-	if atom, _, err := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); atom == 0 {
+	titlePtr, err := syscall.UTF16PtrFromString(title)
+	if err != nil {
 		return nil, err
 	}
 	r := rect{Right: width, Bottom: height}
@@ -129,12 +150,15 @@ func createWindow(title string, width, height int32) (*window, error) {
 	if hwnd == 0 {
 		return nil, err
 	}
+	w := &Window{HWND: hwnd, HInstance: hinst}
+	windows.Store(hwnd, w)
 	procShowWindow.Call(hwnd, swShow)
-	return &window{hwnd: hwnd, hinstance: hinst}, nil
+	w.resized.Store(false)
+	return w, nil
 }
 
-// pump drains the message queue. It returns false after WM_QUIT.
-func (w *window) pump() bool {
+// Pump drains the message queue. It returns false after the window closed.
+func (w *Window) Pump() bool {
 	var m winMsg
 	for {
 		r, _, _ := procPeekMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0, pmRemove)
@@ -149,23 +173,30 @@ func (w *window) pump() bool {
 	}
 }
 
-func (w *window) clientSize() (uint32, uint32) {
+// TakeResized reports whether WM_SIZE arrived since the last call.
+func (w *Window) TakeResized() bool {
+	return w.resized.Swap(false)
+}
+
+// ClientSize returns the client area in pixels. It is 0x0 when minimized.
+func (w *Window) ClientSize() (uint32, uint32) {
 	var r rect
-	procGetClientRect.Call(w.hwnd, uintptr(unsafe.Pointer(&r)))
+	procGetClientRect.Call(w.HWND, uintptr(unsafe.Pointer(&r)))
 	return uint32(max(r.Right-r.Left, 0)), uint32(max(r.Bottom-r.Top, 0))
 }
 
-// setClientSize resizes the window. WM_SIZE is delivered before it returns.
-func (w *window) setClientSize(width, height int32) {
+// SetClientSize resizes the window. WM_SIZE is delivered before it returns.
+func (w *Window) SetClientSize(width, height int32) {
 	r := rect{Right: width, Bottom: height}
 	procAdjustWindowRect.Call(uintptr(unsafe.Pointer(&r)), wsOverlappedWindow, 0)
-	procSetWindowPos.Call(w.hwnd, 0, 0, 0, uintptr(r.Right-r.Left), uintptr(r.Bottom-r.Top), swpNoMove|swpNoZOrder)
+	procSetWindowPos.Call(w.HWND, 0, 0, 0, uintptr(r.Right-r.Left), uintptr(r.Bottom-r.Top), swpNoMove|swpNoZOrder)
 }
 
-func (w *window) destroy() {
-	if w.hwnd != 0 {
-		procDestroyWindow.Call(w.hwnd)
-		w.hwnd = 0
-		w.pump()
+// Destroy closes the window and drains the remaining messages.
+func (w *Window) Destroy() {
+	if w.HWND != 0 {
+		procDestroyWindow.Call(w.HWND)
+		w.HWND = 0
+		w.Pump()
 	}
 }

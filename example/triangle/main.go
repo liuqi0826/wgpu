@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"wgpu"
+	"wgpu/example/internal/win32"
 	"wgpu/native"
 )
 
@@ -94,18 +95,18 @@ func pickAlpha(modes []native.CompositeAlphaMode) native.CompositeAlphaMode {
 }
 
 func run(frames int, resizeTest, ignoreWMSize bool) error {
-	win, err := createWindow("wgpu triangle", 800, 600)
+	win, err := win32.CreateWindow("wgpu triangle", 800, 600)
 	if err != nil {
 		return fmt.Errorf("create window: %w", err)
 	}
-	defer win.destroy()
+	defer win.Destroy()
 
 	instance, err := wgpu.CreateInstance(nil)
 	if err != nil {
 		return err
 	}
 	defer instance.Release()
-	surface, err := instance.CreateSurfaceHWND(win.hwnd, win.hinstance)
+	surface, err := instance.CreateSurfaceHWND(win.HWND, win.HInstance)
 	if err != nil {
 		return err
 	}
@@ -144,7 +145,7 @@ func run(frames int, resizeTest, ignoreWMSize bool) error {
 		AlphaMode:   pickAlpha(caps.AlphaModes),
 	}
 	configure := func() bool {
-		w, h := win.clientSize()
+		w, h := win.ClientSize()
 		if w == 0 || h == 0 {
 			return false
 		}
@@ -240,20 +241,16 @@ func run(frames int, resizeTest, ignoreWMSize bool) error {
 	start := time.Now()
 	rendered, reconfigured, skipped := 0, 0, 0
 	resizedOnce := false
-	resized = false
+	win.TakeResized()
 	for frames == 0 || rendered < frames {
-		if !win.pump() {
+		if !win.Pump() {
 			break // window closed
 		}
 		if resizeTest && !resizedOnce && rendered >= frames/2 {
 			resizedOnce = true
-			win.setClientSize(640, 480)
+			win.SetClientSize(640, 480)
 		}
-		if resized && ignoreWMSize {
-			resized = false
-		}
-		if resized {
-			resized = false
+		if win.TakeResized() && !ignoreWMSize {
 			if !configure() {
 				time.Sleep(10 * time.Millisecond) // minimized
 				continue
