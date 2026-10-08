@@ -5,6 +5,7 @@ package wgpu
 import (
 	"fmt"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -17,6 +18,10 @@ type Device struct {
 	queue atomic.Uintptr
 	state *deviceState
 	slot  uintptr
+
+	// scopeMu serialises error scopes. wgpu-native keeps one scope stack per
+	// device, so a guarded call must not interleave with another push or pop.
+	scopeMu sync.Mutex
 }
 
 // Native returns the raw device handle.
@@ -168,19 +173,56 @@ func (d *Device) CreateCommandEncoder() (*CommandEncoder, error) {
 	if handle == 0 {
 		return nil, d.fail("CreateCommandEncoder")
 	}
-	enc := &CommandEncoder{}
+	enc := &CommandEncoder{dev: d}
 	enc.ptr.Store(uintptr(handle))
 	return enc, nil
 }
 
-// PushErrorScope pushes a validation error scope.
+// PushErrorScope pushes an error scope. wgpu-native 29 only accepts the
+// Validation and OutOfMemory filters and aborts the process on any other, so
+// other filters panic here instead.
 func (d *Device) PushErrorScope(filter native.ErrorFilter) {
+	if filter != native.ErrorFilterValidation && filter != native.ErrorFilterOutOfMemory {
+		panic(fmt.Sprintf("wgpu: unsupported error filter %v", filter))
+	}
+	d.scopeMu.Lock()
+	defer d.scopeMu.Unlock()
 	native.DevicePushErrorScope(d.Native(), filter)
 }
 
-// PopErrorScope waits for the most recent error scope.
-// A nil error means the scope completed with no error.
+// PopErrorScope pops the most recent error scope; its callback runs
+// synchronously. A nil error means the scope completed with no error.
 func (d *Device) PopErrorScope() error {
+	d.scopeMu.Lock()
+	defer d.scopeMu.Unlock()
+	return d.popScope()
+}
+
+// guard runs fn inside internal validation and out-of-memory error scopes
+// (wgpu-native has no internal-error scope) and returns the first error. It is used before calls whose failure
+// would later make wgpu-native abort the process. Errors raised by other
+// goroutines on this device while fn runs land in the same scopes.
+func (d *Device) guard(fn func()) error {
+	if d == nil || d.Native() == 0 || d.isLost() {
+		fn()
+		return nil
+	}
+	d.scopeMu.Lock()
+	defer d.scopeMu.Unlock()
+	h := d.Native()
+	native.DevicePushErrorScope(h, native.ErrorFilterOutOfMemory)
+	native.DevicePushErrorScope(h, native.ErrorFilterValidation)
+	fn()
+	var first error
+	for range 2 {
+		if err := d.popScope(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func (d *Device) popScope() error {
 	ensureCallbacks()
 	id, _ := newWaiter(&scopeWaiters)
 	info := native.PopErrorScopeCallbackInfo{
@@ -271,6 +313,7 @@ func (m *ShaderModule) Release() {
 
 // CommandEncoder records commands.
 type CommandEncoder struct {
+	dev *Device
 	ptr atomic.Uintptr
 }
 
@@ -282,15 +325,31 @@ func (e *CommandEncoder) Native() native.CommandEncoder {
 	return native.CommandEncoder(e.ptr.Load())
 }
 
-// Finish ends the encoder and returns a command buffer.
+// Finish ends the encoder, releases it and returns a command buffer.
+//
+// Validation errors recorded by the encoder or its passes are returned here
+// instead of reaching OnUncapturedError. wgpu-native aborts the process when
+// an invalid command buffer is submitted, so no buffer is returned then.
 func (e *CommandEncoder) Finish() (*CommandBuffer, error) {
-	handle := native.CommandEncoderFinish(e.Native(), nil)
-	e.ptr.Store(0)
+	handle := native.CommandEncoder(e.ptr.Swap(0))
 	if handle == 0 {
-		return nil, fmt.Errorf("wgpu: CommandEncoderFinish returned null")
+		return nil, &Error{Op: "CommandEncoderFinish", Status: "encoder already finished or released"}
+	}
+	var raw native.CommandBuffer
+	err := e.dev.guard(func() { raw = native.CommandEncoderFinish(handle, nil) })
+	// The command buffer lives in its own registry, so the encoder can go now.
+	native.CommandEncoderRelease(handle)
+	if err == nil && raw == 0 {
+		err = &Error{Op: "CommandEncoderFinish", Status: "null command buffer"}
+	}
+	if err != nil {
+		if raw != 0 {
+			native.CommandBufferRelease(raw)
+		}
+		return nil, err
 	}
 	buf := &CommandBuffer{}
-	buf.ptr.Store(uintptr(handle))
+	buf.ptr.Store(uintptr(raw))
 	return buf, nil
 }
 
