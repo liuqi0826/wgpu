@@ -50,7 +50,8 @@ type RenderPassEncoder struct {
 	ptr atomic.Uintptr
 	enc *CommandEncoder
 
-	debugDepth int
+	debugDepth  int
+	statsActive bool
 }
 
 // BeginRenderPass starts a render pass.
@@ -223,6 +224,10 @@ func (p *RenderPassEncoder) End() {
 	if p.debugDepth > 0 {
 		p.enc.setErr("RenderPassEncoderEnd", openGroupsStatus(p.debugDepth))
 		p.debugDepth = 0
+	}
+	if p.statsActive {
+		p.enc.setErr("RenderPassEncoderEnd", "pipeline statistics query still active")
+		p.statsActive = false
 	}
 	native.RenderPassEncoderEnd(p.Native())
 }

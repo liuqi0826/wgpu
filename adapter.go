@@ -115,6 +115,13 @@ func (a *Adapter) RequestDeviceWith(opts *DeviceOptions) (*Device, error) {
 	if opts == nil {
 		opts = &DeviceOptions{}
 	}
+	// wgpu-native only answers "Validation Error" for an unsupported
+	// feature, so name it here.
+	for _, f := range opts.RequiredFeatures {
+		if !a.HasFeature(f) {
+			return nil, &Error{Op: "RequestDevice", Status: "adapter does not support feature", Message: featureString(f)}
+		}
+	}
 	state := &deviceState{onLost: opts.OnLost, onError: opts.OnUncapturedError}
 	slot := uintptr(waiterSeq.Add(1))
 	deviceStates.Store(slot, state)
@@ -168,4 +175,12 @@ func (a *Adapter) RequestDeviceWith(opts *DeviceOptions) (*Device, error) {
 	dev.ptr.Store(res.handle)
 	dev.queue.Store(uintptr(queue))
 	return dev, nil
+}
+
+// featureString names standard and wgpu-native features.
+func featureString(f native.FeatureName) string {
+	if f >= 0x30000 {
+		return native.NativeFeature(f).String()
+	}
+	return f.String()
 }

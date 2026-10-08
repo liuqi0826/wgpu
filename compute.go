@@ -94,7 +94,8 @@ type ComputePassEncoder struct {
 	ptr atomic.Uintptr
 	enc *CommandEncoder
 
-	debugDepth int
+	debugDepth  int
+	statsActive bool
 }
 
 // BeginComputePass starts a compute pass. desc may be nil.
@@ -159,6 +160,10 @@ func (p *ComputePassEncoder) End() {
 	if p.debugDepth > 0 {
 		p.enc.setErr("ComputePassEncoderEnd", openGroupsStatus(p.debugDepth))
 		p.debugDepth = 0
+	}
+	if p.statsActive {
+		p.enc.setErr("ComputePassEncoderEnd", "pipeline statistics query still active")
+		p.statsActive = false
 	}
 	native.ComputePassEncoderEnd(p.Native())
 }

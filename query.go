@@ -3,6 +3,7 @@
 package wgpu
 
 import (
+	"strconv"
 	"sync/atomic"
 
 	"github.com/liuqi0826/wgpu/native"
@@ -13,15 +14,25 @@ const QueryIndexNone = native.QuerySetIndexUndefined
 
 // QuerySetDescriptor describes Device.CreateQuerySet. Timestamp queries need
 // a device created with native.FeatureNameTimestampQuery.
+//
+// Pipeline statistics queries use QueryTypePipelineStatistics, list the
+// statistics to collect in PipelineStatistics and need a device created with
+// FeaturePipelineStatisticsQuery.
 type QuerySetDescriptor struct {
 	Label string
 	Type  native.QueryType
 	Count uint32
+	// PipelineStatistics is only used with QueryTypePipelineStatistics.
+	// Order and duplicates do not matter; results are laid out in ascending
+	// native.PipelineStatisticName order, see QuerySet.PipelineStatistics.
+	PipelineStatistics []native.PipelineStatisticName
 }
 
 // QuerySet is a WGPUQuerySet.
 type QuerySet struct {
-	ptr atomic.Uintptr
+	ptr   atomic.Uintptr
+	typ   native.QueryType
+	stats []native.PipelineStatisticName
 }
 
 // CreateQuerySet creates a query set.
@@ -35,6 +46,32 @@ func (d *Device) CreateQuerySet(desc *QuerySetDescriptor) (*QuerySet, error) {
 		Type:  desc.Type,
 		Count: desc.Count,
 	})
+	// wgpu-native panics on an unknown query type, on a statistics query set
+	// without its extras and on an unknown statistic.
+	var stats []native.PipelineStatisticName
+	switch desc.Type {
+	case native.QueryTypeOcclusion, native.QueryTypeTimestamp:
+		if len(desc.PipelineStatistics) > 0 {
+			return nil, &Error{Op: "CreateQuerySet", Status: "pipeline statistics listed for query type " + desc.Type.String()}
+		}
+	case QueryTypePipelineStatistics:
+		var err error
+		if stats, err = normalizeStatistics(desc.PipelineStatistics); err != nil {
+			return nil, err
+		}
+		if !d.HasFeature(FeaturePipelineStatisticsQuery) {
+			return nil, &Error{Op: "CreateQuerySet", Status: "device was not created with FeaturePipelineStatisticsQuery"}
+		}
+		names := cslice[native.PipelineStatisticName](&m, len(stats))
+		copy(names, stats)
+		raw.NextInChain = addr(cnew(&m, native.QuerySetDescriptorExtras{
+			Chain:                  native.ChainedStruct{SType: native.STypeQuerySetDescriptorExtras},
+			PipelineStatistics:     sliceAddr(names),
+			PipelineStatisticCount: uintptr(len(names)),
+		}))
+	default:
+		return nil, &Error{Op: "CreateQuerySet", Status: "unknown query type 0x" + strconv.FormatUint(uint64(desc.Type), 16)}
+	}
 	var handle native.QuerySet
 	err := d.guard(func() { handle = native.DeviceCreateQuerySet(d.Native(), raw) })
 	m.done()
@@ -47,7 +84,7 @@ func (d *Device) CreateQuerySet(desc *QuerySetDescriptor) (*QuerySet, error) {
 	if handle == 0 {
 		return nil, d.fail("CreateQuerySet")
 	}
-	q := &QuerySet{}
+	q := &QuerySet{typ: desc.Type, stats: stats}
 	q.ptr.Store(uintptr(handle))
 	return q, nil
 }
