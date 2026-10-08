@@ -3,8 +3,12 @@
 package wgpu
 
 import (
+	"errors"
 	"fmt"
+	"regexp"
 	"runtime"
+	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -164,6 +168,16 @@ func (d *Device) CreateBuffer(usage native.BufferUsage, size uint64, mapped bool
 
 // CreateShaderModuleWGSL compiles a WGSL shader module.
 func (d *Device) CreateShaderModuleWGSL(label, code string) (*ShaderModule, error) {
+	handle := d.createShaderModuleWGSL(label, code)
+	if handle == 0 {
+		return nil, d.fail("CreateShaderModule")
+	}
+	mod := &ShaderModule{dev: d, label: label, code: code}
+	mod.ptr.Store(uintptr(handle))
+	return mod, nil
+}
+
+func (d *Device) createShaderModuleWGSL(label, code string) native.ShaderModule {
 	var m cmem
 	source := cnew(&m, native.ShaderSourceWGSL{
 		Chain: native.ChainedStruct{SType: native.STypeShaderSourceWGSL},
@@ -175,12 +189,7 @@ func (d *Device) CreateShaderModuleWGSL(label, code string) (*ShaderModule, erro
 	})
 	handle := native.DeviceCreateShaderModule(d.Native(), desc)
 	m.done()
-	if handle == 0 {
-		return nil, d.fail("CreateShaderModule")
-	}
-	mod := &ShaderModule{}
-	mod.ptr.Store(uintptr(handle))
-	return mod, nil
+	return handle
 }
 
 // CreateCommandEncoder creates an encoder with an empty descriptor.
@@ -309,6 +318,75 @@ func (q *Queue) Submit(buffers ...*CommandBuffer) {
 // ShaderModule is a compiled shader.
 type ShaderModule struct {
 	ptr atomic.Uintptr
+
+	// dev, label and code are kept so CompilationInfo can recompile.
+	dev   *Device
+	label string
+	code  string
+
+	infoMu   sync.Mutex
+	info     []CompilationMessage
+	infoDone bool
+}
+
+// CompilationMessage is one diagnostic reported by ShaderModule.CompilationInfo.
+type CompilationMessage struct {
+	Type    native.CompilationMessageType
+	Message string // full naga diagnostic, including the source excerpt
+	LineNum uint64 // 1-based line of the first source location, 0 if none
+	LinePos uint64 // 1-based column of that location as naga reports it, 0 if none
+}
+
+// diagLocation matches the codespan location line "  ┌─ file:line:col".
+var diagLocation = regexp.MustCompile(`(?m)\x{250C}\x{2500} .*:(\d+):(\d+)\s*$`)
+
+// CompilationInfo returns the diagnostics of the shader module. An empty
+// result means it compiled without errors. wgpu-native 29 does not implement
+// wgpuShaderModuleGetCompilationInfo (it aborts the process), so the first call
+// compiles the WGSL source again inside internal error scopes and turns a
+// validation error into one CompilationMessage of type Error; the result is
+// cached. naga reports no warnings through wgpu-core, so only errors appear.
+// It fails on a released module or device and on a lost device.
+func (m *ShaderModule) CompilationInfo() ([]CompilationMessage, error) {
+	const op = "ShaderModuleGetCompilationInfo"
+	if m.Native() == 0 {
+		return nil, &Error{Op: op, Status: "released shader module"}
+	}
+	m.infoMu.Lock()
+	defer m.infoMu.Unlock()
+	if m.infoDone {
+		return slices.Clone(m.info), nil
+	}
+	d := m.dev
+	if d.Native() == 0 {
+		return nil, &Error{Op: op, Status: "released device"}
+	}
+	if d.isLost() {
+		return nil, d.Err()
+	}
+	var tmp native.ShaderModule
+	err := d.guard(func() { tmp = d.createShaderModuleWGSL(m.label, m.code) })
+	if tmp != 0 {
+		native.ShaderModuleRelease(tmp)
+	}
+	if d.isLost() {
+		return nil, d.Err()
+	}
+	var msgs []CompilationMessage
+	if err != nil {
+		var e *Error
+		if !errors.As(err, &e) || e.Op != "ErrorScope" || e.Status != native.ErrorTypeValidation.String() {
+			return nil, err
+		}
+		msg := CompilationMessage{Type: native.CompilationMessageTypeError, Message: e.Message}
+		if loc := diagLocation.FindStringSubmatch(e.Message); loc != nil {
+			msg.LineNum, _ = strconv.ParseUint(loc[1], 10, 64)
+			msg.LinePos, _ = strconv.ParseUint(loc[2], 10, 64)
+		}
+		msgs = []CompilationMessage{msg}
+	}
+	m.info, m.infoDone = msgs, true
+	return slices.Clone(msgs), nil
 }
 
 // Native returns the raw shader module handle.
