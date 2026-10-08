@@ -44,3 +44,34 @@ func TestParseBackends(t *testing.T) {
 		t.Error("ParseBackends(d3d11) succeeded")
 	}
 }
+
+func TestInstanceOptionsFlags(t *testing.T) {
+	cases := []struct {
+		opts InstanceOptions
+		want native.InstanceFlag
+	}{
+		{InstanceOptions{}, native.InstanceFlagDefault},
+		{InstanceOptions{ExplicitFlags: true}, native.InstanceFlagEmpty},
+		{InstanceOptions{Flags: native.InstanceFlagDebug}, native.InstanceFlagDebug},
+		{InstanceOptions{Flags: native.InstanceFlagDefault | native.InstanceFlagDebug}, native.InstanceFlagDefault | native.InstanceFlagDebug},
+		{InstanceOptions{Flags: native.InstanceFlagDebug, ExplicitFlags: true}, native.InstanceFlagDebug},
+	}
+	for _, tc := range cases {
+		if got := tc.opts.flags(); got != tc.want {
+			t.Errorf("%+v: flags %#x, want %#x", tc.opts, got, tc.want)
+		}
+	}
+	// Both kinds of instance must be creatable.
+	for _, opts := range []InstanceOptions{{}, {ExplicitFlags: true}} {
+		backends, err := BackendsFromEnv(native.InstanceBackendPrimary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts.Backends = backends
+		instance, err := CreateInstance(&opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		instance.Release()
+	}
+}

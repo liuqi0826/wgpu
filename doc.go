@@ -39,6 +39,9 @@
 //
 // 后端用 InstanceOptions.Backends 选择，ParseBackends 和 BackendsFromEnv
 // 可以把 vulkan、dx12、gl 这样的名字（或环境变量 WGPU_BACKEND）转成对应的位。
+// InstanceOptions.Flags 为 0 时使用 native.InstanceFlagDefault（与 CreateInstance(nil) 相同，
+// 含 D3D12 间接绘制 vertex_index 所需的 InstanceFlagValidationIndirectCall）；非 0 时原样使用；
+// 要完全不带标志，设置 ExplicitFlags。
 //
 // RequestDeviceWith 接受 DeviceOptions：OnLost、OnUncapturedError 回调，以及
 // RequiredLimits、RequiredFeatures。回调按顺序在设备自己的 goroutine 上执行，可以再调用本包；

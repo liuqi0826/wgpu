@@ -10,11 +10,29 @@ import (
 	"github.com/liuqi0826/wgpu/native"
 )
 
-// InstanceOptions selects backends for wgpuCreateInstance.
+// InstanceOptions selects backends and flags for wgpuCreateInstance.
 // A zero Backends value enables every backend built into the DLL.
 type InstanceOptions struct {
 	Backends native.InstanceBackend
-	Flags    native.InstanceFlag
+
+	// Flags are the wgpu-native instance flags. Zero means
+	// native.InstanceFlagDefault, the same flags CreateInstance(nil) uses;
+	// they include InstanceFlagValidationIndirectCall, which D3D12 needs for
+	// @builtin(vertex_index) to include firstVertex in indirect draws. A non-zero
+	// value is used as given, so add InstanceFlagDefault to keep the defaults.
+	Flags native.InstanceFlag
+
+	// ExplicitFlags passes Flags unchanged even when it is zero, which
+	// creates the instance with no flags at all.
+	ExplicitFlags bool
+}
+
+// flags returns the flags passed to wgpu-native.
+func (o *InstanceOptions) flags() native.InstanceFlag {
+	if o.Flags == 0 && !o.ExplicitFlags {
+		return native.InstanceFlagDefault
+	}
+	return o.Flags
 }
 
 // Instance is a WGPUInstance.
@@ -33,7 +51,7 @@ func CreateInstance(opts *InstanceOptions) (*Instance, error) {
 		extras := cnew(&m, native.InstanceExtras{
 			Chain:    native.ChainedStruct{SType: native.STypeInstanceExtras},
 			Backends: opts.Backends,
-			Flags:    opts.Flags,
+			Flags:    opts.flags(),
 		})
 		desc = cnew(&m, native.InstanceDescriptor{NextInChain: addr(extras)})
 	}

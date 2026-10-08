@@ -151,6 +151,13 @@ instance, err := wgpu.CreateInstance(&wgpu.InstanceOptions{Backends: native.Inst
 
 - 示例都有 `-backend` 参数，默认取 `WGPU_BACKEND`。
 
+`InstanceOptions.Flags` 是 wgpu-native 的实例标志：
+
+- 为 0 时使用 `native.InstanceFlagDefault`，和 `CreateInstance(nil)` 相同。默认标志包含
+  `InstanceFlagValidationIndirectCall`，D3D12 上间接绘制的 `vertex_index` 需要它，见“多重间接绘制”。
+- 非 0 时原样传给 wgpu-native。想在默认标志之外再加标志，写成 `native.InstanceFlagDefault | native.InstanceFlagDebug`。
+- 确实不要任何标志时设置 `ExplicitFlags: true`（`Flags` 保持 0），实例就不带任何标志创建。
+
 在 RTX 4060 Ti 上，Vulkan、D3D12、GL 三个后端都跑通了全部测试和示例。
 
 ## 示例
@@ -297,12 +304,14 @@ if adapter.HasFeature(wgpu.FeatureImmediates) {
   会终止进程）；offset、count offset 不是 4 的倍数（count offset 的对齐 wgpu-core 不检查）；记录超出 buffer
   （按 16/20 字节做无溢出检查，wgpu-core 的 `offset + stride * count` 没有溢出检查）；count buffer 剩余不足 4 字节；
   Count 版本要求设备启用 `FeatureMultiDrawIndirectCount`。缺少 `INDIRECT` 用途等其他问题由 wgpu-core 报验证错误。
-- count 为 0 时什么也不画。
+- count 为 0 时什么也不画。非 Count 版本 count 为 0 时 Go 侧直接跳过、不调用 native：开启间接验证
+  （默认实例标志包含 `InstanceFlagValidationIndirectCall`）时，wgpu-core 29 在 count 为 0 时仍会画第一条记录（实测三个后端都会）。
 - 本机支持情况：非 Count 版本三个后端都可用；`FeatureMultiDrawIndirectCount` **Vulkan 和 D3D12 支持，GL 不支持**（Count 测试 Skip）。
-- D3D12 上的 `@builtin(vertex_index)`：只有实例带 `InstanceFlagValidationIndirectCall` 时，间接绘制（包括原有的
-  `DrawIndirect`）里的 `vertex_index` 才包含 firstVertex / baseVertex。`CreateInstance(nil)` 带这个标志；
-  `InstanceOptions` 的 `Flags` 为 0 时不带。Count 版本在 D3D12 上无论如何都不包含（wgpu-hal 29 的限制）。
-  从顶点缓冲区取顶点不受影响。Vulkan 和 GL 没有这个问题。
+- D3D12 上的 `@builtin(vertex_index)`：只有实例带 `InstanceFlagValidationIndirectCall` 时，间接绘制
+  （`DrawIndirect`、`DrawIndexedIndirect` 和非 Count 的多重间接绘制）里的 `vertex_index` 才包含 firstVertex / baseVertex。
+  默认标志带这个标志：`CreateInstance(nil)` 和 `Flags` 为 0 的 `InstanceOptions` 都正确；只有 `ExplicitFlags: true`
+  或自己给出不含它的非 0 `Flags` 时才会缺失（全部绘制落到 firstVertex 为 0 的位置）。
+  Count 版本在 D3D12 上无论如何都不包含（wgpu-hal 29 的限制）。从顶点缓冲区取顶点不受影响。Vulkan 和 GL 没有这个问题。
 
 ## 异步回调与轮询
 
@@ -375,8 +384,8 @@ if adapter.HasFeature(wgpu.FeatureImmediates) {
 
 - D3D12 后端下适配器的 `Description` 是空字符串。
 
-- D3D12 上间接绘制的 `vertex_index` 需要 `InstanceFlagValidationIndirectCall`，Count 版本的多重间接绘制始终不含
-  firstVertex，见“多重间接绘制”。
+- D3D12 上间接绘制的 `vertex_index` 需要 `InstanceFlagValidationIndirectCall`（默认标志已包含），
+  Count 版本的多重间接绘制始终不含 firstVertex，见“多重间接绘制”。
 
 ## 测试
 

@@ -219,8 +219,13 @@ func TestMultiDrawIndirect(t *testing.T) {
 		f.check(t, func(p *RenderPassEncoder) { p.MultiDrawIndirect(buf, 16, 3) }, [4]bool{true, true, true, false})
 	})
 	t.Run("draw count 0", func(t *testing.T) {
+		// With indirect validation wgpu-core 29 would still draw record 0.
 		buf := f.buffer(t, usage, drawRecords(0, 1, 2, 3))
-		f.check(t, func(p *RenderPassEncoder) { p.MultiDrawIndirect(buf, 0, 0) }, [4]bool{})
+		f.check(t, func(p *RenderPassEncoder) {
+			p.MultiDrawIndirect(buf, 0, 0)
+			p.MultiDrawIndexedIndirect(buf, 0, 0)
+			p.MultiDrawIndirect(buf, 64, 0) // an empty range at the end is valid
+		}, [4]bool{})
 	})
 	t.Run("indexed", func(t *testing.T) {
 		buf := f.buffer(t, usage, indexedRecords(1, 3, 0))
@@ -346,47 +351,76 @@ func TestMultiDrawIndirectMisuse(t *testing.T) {
 	}
 }
 
-// TestMultiDrawVertexIndex checks @builtin(vertex_index) in multi-draws. On
-// D3D12 it includes firstVertex/baseVertex only when the instance has
-// InstanceFlagValidationIndirectCall, which rewrites the indirect arguments;
-// the Count variants never get it there because wgpu-hal 29 uses the plain
+// TestMultiDrawVertexIndex checks @builtin(vertex_index) in indirect draws.
+// On D3D12 it includes firstVertex/baseVertex only when the instance has
+// InstanceFlagValidationIndirectCall, which rewrites the indirect arguments.
+// Zero InstanceOptions.Flags now means InstanceFlagDefault, which includes it;
+// ExplicitFlags with zero Flags creates an instance without it. The Count
+// variants never include it on D3D12 because wgpu-hal 29 uses the plain
 // command signature for them.
 func TestMultiDrawVertexIndex(t *testing.T) {
 	backends, err := BackendsFromEnv(native.InstanceBackendPrimary)
 	if err != nil {
 		t.Fatal(err)
 	}
-	instance, err := CreateInstance(&InstanceOptions{Backends: backends, Flags: native.InstanceFlagValidationIndirectCall})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(instance.Release)
-	adapter, err := instance.RequestAdapter(&native.RequestAdapterOptions{PowerPreference: native.PowerPreferenceHighPerformance})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(adapter.Release)
-	f := newMultiDrawFixtureFrom(t, adapter, true)
-	info, _ := f.device.AdapterInfo()
-	records := f.buffer(t, native.BufferUsageIndirect, drawRecords(0, 1, 2, 3))
-	indexed := f.buffer(t, native.BufferUsageIndirect, indexedRecords(0, 1, 2, 3))
-	counts := f.buffer(t, native.BufferUsageIndirect, u32Bytes(4))
 	all := [4]bool{true, true, true, true}
+	firstOnly := [4]bool{true}
+	for _, tc := range []struct {
+		name string
+		opts InstanceOptions
+	}{
+		{"zero flags", InstanceOptions{Backends: backends}},
+		{"explicit no flags", InstanceOptions{Backends: backends, ExplicitFlags: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instance, err := CreateInstance(&tc.opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(instance.Release)
+			adapter, err := instance.RequestAdapter(&native.RequestAdapterOptions{PowerPreference: native.PowerPreferenceHighPerformance})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(adapter.Release)
+			f := newMultiDrawFixtureFrom(t, adapter, true)
+			info, _ := f.device.AdapterInfo()
+			d3d12 := info.Backend == native.BackendTypeD3D12
+			records := f.buffer(t, native.BufferUsageIndirect, drawRecords(0, 1, 2, 3))
+			indexed := f.buffer(t, native.BufferUsageIndirect, indexedRecords(0, 1, 2, 3))
+			counts := f.buffer(t, native.BufferUsageIndirect, u32Bytes(4))
 
-	t.Run("direct", func(t *testing.T) {
-		f.check(t, func(p *RenderPassEncoder) { p.MultiDrawIndirect(records, 0, 4) }, all)
-		f.check(t, func(p *RenderPassEncoder) { p.MultiDrawIndexedIndirect(indexed, 0, 4) }, all)
-	})
-	t.Run("count", func(t *testing.T) {
-		if !f.count {
-			t.Skip("adapter does not support FeatureMultiDrawIndirectCount")
-		}
-		if info.Backend == native.BackendTypeD3D12 {
-			f.check(t, func(p *RenderPassEncoder) { p.MultiDrawIndirectCount(records, 0, counts, 0, 4) }, [4]bool{true})
-			t.Log("D3D12: vertex_index of Count draws lacks firstVertex (wgpu-hal 29 limitation), all draws land in column 0")
-			return
-		}
-		f.check(t, func(p *RenderPassEncoder) { p.MultiDrawIndirectCount(records, 0, counts, 0, 4) }, all)
-		f.check(t, func(p *RenderPassEncoder) { p.MultiDrawIndexedIndirectCount(indexed, 0, counts, 0, 4) }, all)
-	})
+			// Without the flag D3D12 puts every draw in column 0.
+			want := all
+			if d3d12 && tc.opts.ExplicitFlags {
+				want = firstOnly
+			}
+			t.Run("direct", func(t *testing.T) {
+				f.check(t, func(p *RenderPassEncoder) { p.MultiDrawIndirect(records, 0, 4) }, want)
+				f.check(t, func(p *RenderPassEncoder) { p.MultiDrawIndexedIndirect(indexed, 0, 4) }, want)
+				for c := range uint32(4) {
+					col := [4]bool{}
+					col[c] = true
+					if d3d12 && tc.opts.ExplicitFlags {
+						col = firstOnly
+					}
+					f.check(t, func(p *RenderPassEncoder) { p.DrawIndirect(records, 16*uint64(c)) }, col)
+					f.check(t, func(p *RenderPassEncoder) { p.DrawIndexedIndirect(indexed, 20*uint64(c)) }, col)
+				}
+			})
+			t.Run("count", func(t *testing.T) {
+				if !f.count {
+					t.Skip("adapter does not support FeatureMultiDrawIndirectCount")
+				}
+				if d3d12 {
+					f.check(t, func(p *RenderPassEncoder) { p.MultiDrawIndirectCount(records, 0, counts, 0, 4) }, firstOnly)
+					f.check(t, func(p *RenderPassEncoder) { p.MultiDrawIndexedIndirectCount(indexed, 0, counts, 0, 4) }, firstOnly)
+					t.Log("D3D12: vertex_index of Count draws lacks firstVertex (wgpu-hal 29 limitation), all draws land in column 0")
+					return
+				}
+				f.check(t, func(p *RenderPassEncoder) { p.MultiDrawIndirectCount(records, 0, counts, 0, 4) }, all)
+				f.check(t, func(p *RenderPassEncoder) { p.MultiDrawIndexedIndirectCount(indexed, 0, counts, 0, 4) }, all)
+			})
+		})
+	}
 }

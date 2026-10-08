@@ -78,21 +78,25 @@ func (p *RenderPassEncoder) multiDrawOK(op string, buf *Buffer, offset uint64, c
 // the device wgpu may emulate it with separate indirect draws.
 //
 // On D3D12, @builtin(vertex_index) includes firstVertex (baseVertex for
-// indexed draws) only when the instance has InstanceFlagValidationIndirectCall:
-// CreateInstance(nil) sets it, InstanceOptions with zero Flags does not. The
+// indexed draws) only when the instance has InstanceFlagValidationIndirectCall,
+// which the default instance flags include (see InstanceOptions.Flags). The
 // Count variants never include it on D3D12. Vertex buffer fetches are correct
 // either way.
+//
+// A zero count draws nothing. It is not passed to wgpu-native: with indirect
+// validation (part of the default instance flags) wgpu-core 29 still issues
+// the first record when count is 0.
 func (p *RenderPassEncoder) MultiDrawIndirect(buf *Buffer, offset uint64, count uint32) {
-	if p.multiDrawOK("RenderPassEncoderMultiDrawIndirect", buf, offset, count, drawIndirectStride) {
+	if p.multiDrawOK("RenderPassEncoderMultiDrawIndirect", buf, offset, count, drawIndirectStride) && count > 0 {
 		native.RenderPassEncoderMultiDrawIndirect(p.Native(), buf.Native(), offset, count)
 	}
 }
 
 // MultiDrawIndexedIndirect is MultiDrawIndirect for indexed draws; each record
 // is 20 bytes (indexCount, instanceCount, firstIndex as uint32, baseVertex as
-// int32, firstInstance as uint32).
+// int32, firstInstance as uint32). A zero count draws nothing.
 func (p *RenderPassEncoder) MultiDrawIndexedIndirect(buf *Buffer, offset uint64, count uint32) {
-	if p.multiDrawOK("RenderPassEncoderMultiDrawIndexedIndirect", buf, offset, count, drawIndexedIndirectStride) {
+	if p.multiDrawOK("RenderPassEncoderMultiDrawIndexedIndirect", buf, offset, count, drawIndexedIndirectStride) && count > 0 {
 		native.RenderPassEncoderMultiDrawIndexedIndirect(p.Native(), buf.Native(), offset, count)
 	}
 }
