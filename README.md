@@ -122,7 +122,8 @@ func main() {
 - 纹理、纹理视图、采样器、`Queue.WriteTexture`、缓冲区和纹理之间的拷贝
 - 着色器（WGSL）、绑定组和布局、管线布局、渲染管线、计算管线（含 override 常量和自动布局）
 - RenderPass、ComputePass（含间接绘制和间接派发）、RenderBundle
-- QuerySet：遮挡查询、pass 的时间戳写入、`ResolveQuerySet`、`Queue.TimestampPeriod`
+- QuerySet：遮挡查询、pass 的时间戳写入、pipeline statistics 查询、`ResolveQuerySet`、`Queue.TimestampPeriod`
+- 调试标记：四种编码器的 `PushDebugGroup` / `PopDebugGroup` / `InsertDebugMarker`
 - `Queue.OnSubmittedWorkDone`（返回 channel）和阻塞的 `WaitSubmittedWorkDone`
 - Win32 窗口表面：`Instance.CreateSurfaceHWND`、`Surface.ConfigureWith`、`GetCurrentTexture`、`Present`
 - 错误域 `PushErrorScope` / `PopErrorScope`
@@ -158,10 +159,77 @@ instance, err := wgpu.CreateInstance(&wgpu.InstanceOptions{Backends: native.Inst
 | --- | --- | --- |
 | `go run ./example/info` | 列出所有适配器 | `-backend` |
 | `go run ./example/compute` | 在 GPU 上把数组每个元素乘 2 并校验，支持时打印时间戳查询测出的 GPU 耗时 | `-n` 元素个数（默认 1048576），`-backend` |
-| `go run ./example/triangle` | Win32 窗口里画一个三角形，处理窗口缩放和 Outdated/Lost/Suboptimal | `-frames N` 画 N 帧后退出，`-resize` 中途改变窗口大小，`-ignore-wmsize` 只依靠 Outdated/Suboptimal 重新配置，`-backend` |
+| `go run ./example/triangle` | Win32 窗口里画一个三角形，处理窗口缩放和 Outdated/Lost/Suboptimal，每帧带调试组便于用 RenderDoc 查看 | `-frames N` 画 N 帧后退出，`-resize` 中途改变窗口大小，`-ignore-wmsize` 只依靠 Outdated/Suboptimal 重新配置，`-backend` |
 | `go run ./example/textured` | 窗口里画贴了代码生成的棋盘格纹理的旋转四边形，使用采样器、绑定组和深度纹理，窗口大小变化时重建深度纹理 | `-frames N`，`-resize`，`-backend` |
 
 例如：`go run ./example/textured -backend dx12 -frames 300 -resize`。
+
+## 调试标记
+
+`CommandEncoder`、`RenderPassEncoder`、`ComputePassEncoder`、`RenderBundleEncoder` 都有
+`PushDebugGroup`、`PopDebugGroup`、`InsertDebugMarker`，在 RenderDoc 等 GPU 调试工具里可以看到分组。
+`example/triangle` 每帧用 `frame` / `triangle` 两层调试组包住绘制。
+
+```go
+enc.PushDebugGroup("frame")
+pass, _ := enc.BeginRenderPass(desc)
+pass.PushDebugGroup("triangle")
+pass.InsertDebugMarker("draw")
+pass.DrawIndexed(3, 1, 0, 0, 0)
+pass.PopDebugGroup()
+pass.End()
+enc.PopDebugGroup()
+commands, err := enc.Finish() // 不配对时在这里返回错误
+```
+
+- 嵌套深度在 Go 侧跟踪。每个 pass 有自己的栈，不能跨 pass 或跨编码器配对。
+- 栈为空时 `PopDebugGroup` 不会下发给 wgpu-native，立即记一个错误，由 `Finish` 返回。
+- pass `End` 时或编码器 `Finish` 时还有未关闭的组，`Finish` 返回 `N debug group(s) still open`。
+- 实测 wgpu-native 29 对不配对的 push/pop 只记录验证错误，不会终止进程；但带错误的命令缓冲区一旦提交就会终止进程，
+  所以这些错误都由 `Finish` 返回，不交出命令缓冲区。
+- RenderBundle 的调试命令同样在 Go 侧记录、重放并检查配对，但 wgpu-native 29 里
+  `wgpuRenderBundleEncoderPushDebugGroup` 等是空实现，bundle 内的调试组不会出现在调试工具里。
+- **没有 `SetLabel`**：wgpu-native 29 的所有 `wgpuXxxSetLabel` 都是 `unimplemented!()`，调用会直接终止进程
+  （已在 Buffer、Texture、CommandEncoder、ComputePipeline 上实测）。标签请通过各描述符的 `Label` 字段设置。
+
+## Pipeline statistics 查询
+
+wgpu-native 扩展特性 `PipelineStatisticsQuery`。请求设备前**先检查适配器**：
+
+```go
+if adapter.HasFeature(wgpu.FeaturePipelineStatisticsQuery) {
+	device, err := adapter.RequestDeviceWith(&wgpu.DeviceOptions{
+		RequiredFeatures: []native.FeatureName{wgpu.FeaturePipelineStatisticsQuery},
+	})
+	q, err := device.CreateQuerySet(&wgpu.QuerySetDescriptor{
+		Type:  wgpu.QueryTypePipelineStatistics,
+		Count: 1,
+		PipelineStatistics: []native.PipelineStatisticName{
+			native.PipelineStatisticNameVertexShaderInvocations,
+			native.PipelineStatisticNameFragmentShaderInvocations,
+		},
+	})
+	// pass.BeginPipelineStatisticsQuery(q, 0) ... pass.EndPipelineStatisticsQuery()
+	// enc.ResolveQuerySet(q, 0, 1, resolve, 0)，每个查询占 q.ResultStride() 字节
+	stats, err := q.ParsePipelineStatistics(data) // []wgpu.PipelineStatistics
+	fmt.Println(stats[0].VertexShaderInvocations, stats[0].FragmentShaderInvocations)
+}
+```
+
+- 统计项可以是 `VertexShaderInvocations`、`ClipperInvocations`、`ClipperPrimitivesOut`、
+  `FragmentShaderInvocations`、`ComputeShaderInvocations`。顺序和重复不影响结果：wgpu-core 按位集合保存，
+  结果按统计项的枚举值升序排列，`QuerySet.PipelineStatistics()` 返回实际顺序。
+- `PipelineStatistics` 只填写请求过的字段，`Has(name)` 判断某项是否采集，`Value(name)` 按名字取值。
+  没有 QuerySet 时可以用 `wgpu.DecodePipelineStatistics(stats, data)` 解析。
+- Go 侧检查：未知查询类型、未知统计项、空统计项列表（这三种 wgpu-native 会 panic）、设备未启用特性、
+  Begin 传入空或非统计类型的 query set、查询嵌套、End 没有对应的 Begin、pass 结束时查询未关闭
+  （wgpu-core 29 不检查 compute pass 里未关闭的统计查询）。这些都由 `CommandEncoder.Finish` 或 `CreateQuerySet` 返回错误。
+- `RequestDeviceWith` 会先检查 `RequiredFeatures` 是否都被适配器支持，不支持时返回带特性名的错误
+  （wgpu-native 本身只返回笼统的 `Validation Error`）。
+- 本机（RTX 4060 Ti）支持情况：**Vulkan 支持；D3D12 和 GL 不支持**（适配器不报告该特性，相关测试 Skip）。
+- 实测数值（Vulkan，64x64 目标上画一个全屏三角形）：顶点 3、裁剪 1、裁剪输出图元 1、片元 4096；
+  同一个三角形画 4 个实例时裁剪 4、片元 16384，但顶点仍是 3（着色器没用 instance_index，驱动复用了顶点结果），
+  所以顶点调用次数只能当作下限参考。compute 调用次数严格等于工作组数 × 每组线程数。
 
 ## 异步回调与轮询
 
@@ -207,6 +275,8 @@ instance, err := wgpu.CreateInstance(&wgpu.InstanceOptions{Backends: native.Inst
   | 取未映射、未对齐或越界的映射范围 | 终止进程 | Go 侧跟踪映射状态和范围，`MappedBytes` / `ReadMapped` 返回错误 |
   | 传入空句柄（pipeline、bundle、query set 等） | 终止进程 | 能检查的地方返回错误，或由 `CommandEncoder.Finish` 报告 |
   | `PushErrorScope` 用 `Internal` 过滤器 | 终止进程 | Go 侧 panic |
+  | 任何 `wgpuXxxSetLabel` | 终止进程（`unimplemented!()`） | 不提供 `SetLabel` |
+  | `CreateQuerySet` 用未知查询类型、统计查询没有统计项列表或含未知统计项 | 终止进程 | Go 侧返回错误 |
 
   仍然没有拦截、会终止进程的情况：
   - 提交时才发现的问题，例如命令缓冲区引用的缓冲区在提交时仍处于映射状态或已经被销毁；
@@ -235,7 +305,8 @@ set WGPU_BACKEND=dx12
 go test -count=1 ./...        # 指定后端（cmd 写法）
 ```
 
-测试需要真实的 GPU 和 DLL。`TestTimestampQuery` 在适配器不支持 `TimestampQuery` 时会跳过。
+测试需要真实的 GPU 和 DLL。`TestTimestampQuery` 在适配器不支持 `TimestampQuery` 时会跳过，
+`TestPipelineStatisticsRender` / `TestPipelineStatisticsCompute` 在不支持 `PipelineStatisticsQuery` 时跳过（本机 D3D12 和 GL）。
 
 ## 代码生成
 

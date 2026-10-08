@@ -11,6 +11,18 @@
 // 描述符用 Go 结构体表示，零值字段取 WebGPU 的常用默认值，内部负责组装 native 结构体和 StringView。
 // 示例见 example/triangle、example/textured 和 example/compute。
 //
+// 各编码器（CommandEncoder、RenderPassEncoder、ComputePassEncoder、RenderBundleEncoder）
+// 都有 PushDebugGroup、PopDebugGroup、InsertDebugMarker，可以在 RenderDoc 等工具里看到。
+// 嵌套深度在 Go 侧跟踪：空栈 pop 不会下发给 wgpu-native，pass 结束或编码器 Finish 时还有
+// 未关闭的组，Finish 返回错误。wgpu-native 29 的 wgpuXxxSetLabel 全部未实现（调用即终止进程），
+// 所以本包没有 SetLabel，标签通过描述符的 Label 字段设置。
+//
+// Pipeline statistics 查询：先用 Adapter.HasFeature(FeaturePipelineStatisticsQuery) 检查，
+// 再放进 DeviceOptions.RequiredFeatures；QuerySetDescriptor 用 QueryTypePipelineStatistics
+// 并列出 PipelineStatistics，pass 里用 Begin/EndPipelineStatisticsQuery 包住绘制或派发，
+// ResolveQuerySet 之后用 QuerySet.ParsePipelineStatistics 解析成 PipelineStatistics 结构体。
+// 本机测试中只有 Vulkan 后端支持这个特性，D3D12 和 GL 不支持。
+//
 // 后端用 InstanceOptions.Backends 选择，ParseBackends 和 BackendsFromEnv
 // 可以把 vulkan、dx12、gl 这样的名字（或环境变量 WGPU_BACKEND）转成对应的位。
 //
