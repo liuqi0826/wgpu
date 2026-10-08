@@ -75,6 +75,8 @@ fn fs_main(in: VSOut) -> @location(0) vec4f {
 }
 `
 
+var backendFlag = flag.String("backend", os.Getenv(wgpu.BackendEnv), "backends: vulkan, dx12, gl or all (default $WGPU_BACKEND)")
+
 func main() {
 	frames := flag.Int("frames", 0, "render N frames and exit (0 runs until the window is closed)")
 	resize := flag.Bool("resize", false, "resize the window halfway through -frames")
@@ -164,7 +166,11 @@ func run(frames int, resizeTest bool) error {
 	}
 	defer win.Destroy()
 
-	instance, err := wgpu.CreateInstance(nil)
+	backends, err := wgpu.ParseBackends(*backendFlag)
+	if err != nil {
+		return err
+	}
+	instance, err := wgpu.CreateInstance(&wgpu.InstanceOptions{Backends: backends})
 	if err != nil {
 		return err
 	}

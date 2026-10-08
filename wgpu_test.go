@@ -18,10 +18,7 @@ func TestNoCGOInstanceDeviceAndShader(t *testing.T) {
 	// instance is the check that the export was actually called.
 	t.Logf("version %#x library %s", version, native.LibraryPath())
 
-	instance, err := CreateInstance(&InstanceOptions{Backends: native.InstanceBackendPrimary})
-	if err != nil {
-		t.Fatal(err)
-	}
+	instance := testInstance(t)
 	defer instance.Release()
 
 	adapters, err := instance.EnumerateAdapters(0)

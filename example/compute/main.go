@@ -28,6 +28,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 }
 `
 
+var backendFlag = flag.String("backend", os.Getenv(wgpu.BackendEnv), "backends: vulkan, dx12, gl or all (default $WGPU_BACKEND)")
+
 func main() {
 	n := flag.Int("n", 1<<20, "number of uint32 elements")
 	flag.Parse()
@@ -41,7 +43,11 @@ func run(n int) error {
 	if n <= 0 {
 		return fmt.Errorf("-n must be positive")
 	}
-	instance, err := wgpu.CreateInstance(nil)
+	backends, err := wgpu.ParseBackends(*backendFlag)
+	if err != nil {
+		return err
+	}
+	instance, err := wgpu.CreateInstance(&wgpu.InstanceOptions{Backends: backends})
 	if err != nil {
 		return err
 	}

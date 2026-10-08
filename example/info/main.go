@@ -3,6 +3,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
@@ -10,7 +11,10 @@ import (
 	"wgpu/native"
 )
 
+var backendFlag = flag.String("backend", os.Getenv(wgpu.BackendEnv), "backends: vulkan, dx12, gl or all (default $WGPU_BACKEND)")
+
 func main() {
+	flag.Parse()
 	version, err := wgpu.Version()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -19,7 +23,12 @@ func main() {
 	fmt.Printf("wgpu-native version %#x\n", version)
 	fmt.Printf("library %s\n", native.LibraryPath())
 
-	instance, err := wgpu.CreateInstance(nil)
+	backends, err := wgpu.ParseBackends(*backendFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	instance, err := wgpu.CreateInstance(&wgpu.InstanceOptions{Backends: backends})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

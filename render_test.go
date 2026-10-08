@@ -13,10 +13,7 @@ import (
 
 func newTestDevice(t *testing.T) *Device {
 	t.Helper()
-	instance, err := CreateInstance(&InstanceOptions{Backends: native.InstanceBackendPrimary})
-	if err != nil {
-		t.Fatal(err)
-	}
+	instance := testInstance(t)
 	t.Cleanup(instance.Release)
 	adapter, err := instance.RequestAdapter(&native.RequestAdapterOptions{
 		PowerPreference: native.PowerPreferenceHighPerformance,
