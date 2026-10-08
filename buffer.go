@@ -46,6 +46,25 @@ func (b *Buffer) Native() native.Buffer {
 // Size returns the buffer size in bytes.
 func (b *Buffer) Size() uint64 { return b.size }
 
+// MapState reports whether the buffer is unmapped, has a MapAsync in flight
+// or is mapped. wgpu-native 29 does not implement wgpuBufferGetMapState (it
+// aborts the process), so the state comes from the Go-side map tracking: a
+// mapping request that fails, Unmap, Release, and the release or loss of the
+// device all return the buffer to BufferMapStateUnmapped.
+func (b *Buffer) MapState() native.BufferMapState {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	switch {
+	case b.Native() == 0:
+		return native.BufferMapStateUnmapped
+	case b.state == mapPending:
+		return native.BufferMapStatePending
+	case b.state == mapActive:
+		return native.BufferMapStateMapped
+	}
+	return native.BufferMapStateUnmapped
+}
+
 // checkRange validates a mapped-range request against the Go map state.
 func (b *Buffer) checkRange(op string, offset, size uint64, write bool) error {
 	b.mu.Lock()
@@ -148,6 +167,13 @@ func (b *Buffer) MapAsync(mode native.MapMode, offset, size uint64) <-chan error
 		b.writable = mode&native.MapModeWrite != 0
 		b.start, b.end = offset, offset+size
 		return nil
+	}, func() {
+		// Device released or lost before the callback arrived.
+		b.mu.Lock()
+		if b.state == mapPending {
+			b.state = mapIdle
+		}
+		b.mu.Unlock()
 	})
 	if err != nil {
 		b.mu.Lock()

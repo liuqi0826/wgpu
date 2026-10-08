@@ -22,7 +22,7 @@ func (q *Queue) OnSubmittedWorkDone() <-chan error {
 			return &Error{Op: "QueueOnSubmittedWorkDone", Status: s.String(), Message: msg}
 		}
 		return nil
-	})
+	}, nil)
 	if err != nil {
 		ch := make(chan error, 1)
 		ch <- err

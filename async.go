@@ -16,6 +16,9 @@ type pendingOp struct {
 	ch      chan error
 	once    sync.Once
 	convert func(status uintptr, message string) error
+	// cancel, if not nil, runs when the operation is cancelled instead of
+	// completed by its callback.
+	cancel func()
 }
 
 // pendingOps maps callback userdata to operations; a missing id belongs to
@@ -31,10 +34,11 @@ func (p *pendingOp) complete(err error) {
 
 // newOp registers an operation. It returns nil and an error when the device
 // is lost or released, because the callback would never be delivered.
-func (d *Device) newOp(convert func(uintptr, string) error) (*pendingOp, error) {
+// cancel may be nil.
+func (d *Device) newOp(convert func(uintptr, string) error, cancel func()) (*pendingOp, error) {
 	ensureCallbacks()
 	s := d.state
-	op := &pendingOp{id: uintptr(waiterSeq.Add(1)), state: s, ch: make(chan error, 1), convert: convert}
+	op := &pendingOp{id: uintptr(waiterSeq.Add(1)), state: s, ch: make(chan error, 1), convert: convert, cancel: cancel}
 	s.mu.Lock()
 	switch {
 	case s.released:
@@ -67,14 +71,20 @@ func finishOp(id, status uintptr, message string) {
 	op.complete(op.convert(status, message))
 }
 
-// cancelPending completes every outstanding operation with err.
+// cancelPending completes every outstanding operation with err. An operation
+// whose callback is already being delivered by finishOp is left to it.
 func (s *deviceState) cancelPending(err error) {
 	s.mu.Lock()
 	ops := s.pending
 	s.pending = nil
 	s.mu.Unlock()
 	for id, op := range ops {
-		pendingOps.Delete(id)
+		if _, ok := pendingOps.LoadAndDelete(id); !ok {
+			continue
+		}
+		if op.cancel != nil {
+			op.cancel()
+		}
 		op.complete(err)
 	}
 }
