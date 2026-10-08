@@ -297,12 +297,28 @@ def parse_union(body: str, api: API) -> tuple[str, int, int, str]:
 
 def parse_decl(decl: str, api: API) -> tuple[str, str, int, int]:
     decl = " ".join(decl.replace("*", " * ").split())
+    # A C array field such as `float transform[12]` becomes [12]float32. The
+    # size is the element size times the length; the alignment is the element's.
+    full = decl
+    dims = []
+    while True:
+        array = re.fullmatch(r"(?P<rest>.+?)\s*\[\s*(?P<len>[^\[\]]*?)\s*\]", decl)
+        if not array:
+            break
+        if not re.fullmatch(r"\d+", array.group("len")):
+            raise SystemExit(f"unsupported array length in {full!r}")
+        dims.insert(0, int(array.group("len")))
+        decl = array.group("rest")
     match = re.fullmatch(r"(?P<type>.+?) (?P<name>[A-Za-z_][A-Za-z0-9_]*)", decl.strip())
     if not match:
         raise SystemExit(f"bad declaration {decl!r}")
     c_type = match.group("type").strip()
     name = go_ident(match.group("name"))
     go_type, size, align = resolve_value_type(c_type, api)
+    for length in reversed(dims):
+        if length == 0:
+            raise SystemExit(f"zero-length array in {full!r}")
+        go_type, size = f"[{length}]{go_type}", size * length
     return name, go_type, size, align
 
 
@@ -597,7 +613,7 @@ def topo_structs(api: API) -> list[StructType]:
             raise SystemExit(f"struct cycle at {info.cname}")
         visiting.add(info.goname)
         for field in info.fields:
-            dep = by_go.get(field.go_type)
+            dep = by_go.get(re.sub(r"^(\[\d+\])+", "", field.go_type))
             if dep is not None:
                 visit(dep)
         visiting.remove(info.goname)
