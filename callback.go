@@ -29,6 +29,9 @@ var (
 	lostCB    uintptr
 	errorCB   uintptr
 
+	workDoneCB uintptr
+	mapAsyncCB uintptr
+
 	adapterWaiters sync.Map
 	deviceWaiters  sync.Map
 	mapWaiters     sync.Map
@@ -55,6 +58,8 @@ type deviceState struct {
 	onError func(typ native.ErrorType, message string)
 	queue   []func()
 	running bool
+
+	pending map[uintptr]*pendingOp
 }
 
 // dispatch queues fn unless the device was released. Call without s.mu held.
@@ -101,6 +106,8 @@ func ensureCallbacks() {
 		scopeCB = purego.NewCallback(onPopErrorScope)
 		lostCB = purego.NewCallback(onDeviceLost)
 		errorCB = purego.NewCallback(onUncapturedError)
+		workDoneCB = purego.NewCallback(onQueueWorkDone)
+		mapAsyncCB = purego.NewCallback(onMapAsync)
 	})
 }
 
@@ -170,6 +177,18 @@ func onBufferMap(status, message, userdata1, _ uintptr) uintptr {
 	return 0
 }
 
+// onQueueWorkDone receives (status, message, userdata1, userdata2).
+func onQueueWorkDone(status, message, userdata1, _ uintptr) uintptr {
+	finishOp(userdata1, status, messageAt(message))
+	return 0
+}
+
+// onMapAsync receives (status, message, userdata1, userdata2).
+func onMapAsync(status, message, userdata1, _ uintptr) uintptr {
+	finishOp(userdata1, status, messageAt(message))
+	return 0
+}
+
 func onPopErrorScope(status, typ, message, userdata1, _ uintptr) uintptr {
 	deliver(&scopeWaiters, userdata1, callbackResult{
 		status:  status,
@@ -191,6 +210,8 @@ func (s *deviceState) markLost(reason native.DeviceLostReason, msg string) {
 	s.lostMsg = msg
 	cb := s.onLost
 	s.mu.Unlock()
+	// Polling stops on a lost device, so nothing pending would complete.
+	s.cancelPending(&Error{Op: "DeviceLost", Status: reason.String(), Message: msg})
 	if cb != nil {
 		s.dispatch(func() { cb(reason, msg) })
 	}

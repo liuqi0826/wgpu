@@ -109,6 +109,7 @@ func (d *Device) Release() {
 		d.state.mu.Lock()
 		d.state.released = true
 		d.state.mu.Unlock()
+		d.state.cancelPending(&Error{Op: "Device", Status: "released"})
 	}
 	queue := native.Queue(d.queue.Swap(0))
 	if queue != 0 {
