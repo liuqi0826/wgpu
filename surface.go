@@ -3,7 +3,6 @@
 package wgpu
 
 import (
-	"runtime"
 	"sync/atomic"
 	"unsafe"
 
@@ -56,27 +55,75 @@ type SurfaceCapabilities struct {
 	AlphaModes   []native.CompositeAlphaMode
 }
 
-// Configure connects the surface to a device.
-func (s *Surface) Configure(device *Device, format native.TextureFormat, width, height uint32) {
-	config := native.SurfaceConfiguration{
-		Device:      device.Native(),
-		Format:      format,
-		Usage:       native.TextureUsageRenderAttachment,
-		Width:       width,
-		Height:      height,
-		AlphaMode:   native.CompositeAlphaModeOpaque,
-		PresentMode: native.PresentModeFifo,
-	}
-	native.SurfaceConfigure(s.Native(), &config)
-	runtime.KeepAlive(config)
+// SurfaceConfig describes Surface.ConfigureWith. A zero Usage is
+// RenderAttachment, a zero PresentMode is Fifo and a zero AlphaMode is Auto.
+type SurfaceConfig struct {
+	Format      native.TextureFormat
+	Usage       native.TextureUsage
+	Width       uint32
+	Height      uint32
+	PresentMode native.PresentMode
+	AlphaMode   native.CompositeAlphaMode
+	ViewFormats []native.TextureFormat
 }
 
-// CurrentTexture acquires the next swapchain texture.
-// The caller must Release the texture after Present.
+// ConfigureWith connects the surface to a device with explicit options.
+// Call it again after the window size changes.
+func (s *Surface) ConfigureWith(device *Device, cfg SurfaceConfig) {
+	var m cmem
+	raw := cnew(&m, native.SurfaceConfiguration{
+		Device:      device.Native(),
+		Format:      cfg.Format,
+		Usage:       orDefault(cfg.Usage, native.TextureUsageRenderAttachment),
+		Width:       cfg.Width,
+		Height:      cfg.Height,
+		AlphaMode:   cfg.AlphaMode,
+		PresentMode: orDefault(cfg.PresentMode, native.PresentModeFifo),
+	})
+	if n := len(cfg.ViewFormats); n > 0 {
+		formats := cslice[native.TextureFormat](&m, n)
+		copy(formats, cfg.ViewFormats)
+		raw.ViewFormatCount = uintptr(n)
+		raw.ViewFormats = sliceAddr(formats)
+	}
+	native.SurfaceConfigure(s.Native(), raw)
+	m.done()
+}
+
+// Configure connects the surface to a device with Fifo presentation and an
+// opaque alpha mode.
+func (s *Surface) Configure(device *Device, format native.TextureFormat, width, height uint32) {
+	s.ConfigureWith(device, SurfaceConfig{
+		Format:      format,
+		Width:       width,
+		Height:      height,
+		PresentMode: native.PresentModeFifo,
+		AlphaMode:   native.CompositeAlphaModeOpaque,
+	})
+}
+
+// Unconfigure detaches the surface from its device.
+func (s *Surface) Unconfigure() {
+	native.SurfaceUnconfigure(s.Native())
+}
+
+// CurrentTexture acquires the next swapchain texture as a raw handle.
+// The caller must Release the texture after Present. See GetCurrentTexture.
 func (s *Surface) CurrentTexture() (native.Texture, native.SurfaceGetCurrentTextureStatus) {
 	var tex native.SurfaceTexture
 	native.SurfaceGetCurrentTexture(s.Native(), &tex)
 	return tex.Texture, tex.Status
+}
+
+// GetCurrentTexture acquires the next swapchain texture. The texture is nil
+// unless a texture was returned; on Outdated or Lost reconfigure the surface.
+// Release the texture after Present.
+func (s *Surface) GetCurrentTexture() (*Texture, native.SurfaceGetCurrentTextureStatus) {
+	handle, status := s.CurrentTexture()
+	if handle == 0 {
+		return nil, status
+	}
+	return newTexture(handle), status
 }
 
 // Present presents the current texture.
