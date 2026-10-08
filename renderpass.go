@@ -159,14 +159,25 @@ func (p *RenderPassEncoder) ExecuteBundles(bundles ...*RenderBundle) {
 	runtime.KeepAlive(raw)
 }
 
-// DrawIndirect draws with arguments read from buf at offset.
+// DrawIndirect draws with one 16-byte record (vertexCount, instanceCount,
+// firstVertex, firstInstance) read from buf at offset. buf needs
+// BufferUsageIndirect. A released pass, a nil or released buf, an offset that
+// is not a multiple of 4 or a record past the end of buf is not passed to
+// wgpu-native (which aborts on some of them); the error is returned by
+// CommandEncoder.Finish, as with MultiDrawIndirect.
 func (p *RenderPassEncoder) DrawIndirect(buf *Buffer, offset uint64) {
-	native.RenderPassEncoderDrawIndirect(p.Native(), buf.Native(), offset)
+	if p.multiDrawOK("RenderPassEncoderDrawIndirect", buf, offset, 1, drawIndirectStride) {
+		native.RenderPassEncoderDrawIndirect(p.Native(), buf.Native(), offset)
+	}
 }
 
-// DrawIndexedIndirect draws indexed primitives with arguments read from buf.
+// DrawIndexedIndirect draws indexed primitives with one 20-byte record
+// (indexCount, instanceCount, firstIndex, baseVertex as int32, firstInstance)
+// read from buf at offset, checked like DrawIndirect.
 func (p *RenderPassEncoder) DrawIndexedIndirect(buf *Buffer, offset uint64) {
-	native.RenderPassEncoderDrawIndexedIndirect(p.Native(), buf.Native(), offset)
+	if p.multiDrawOK("RenderPassEncoderDrawIndexedIndirect", buf, offset, 1, drawIndexedIndirectStride) {
+		native.RenderPassEncoderDrawIndexedIndirect(p.Native(), buf.Native(), offset)
+	}
 }
 
 // SetBindGroup binds group at index with optional dynamic offsets.

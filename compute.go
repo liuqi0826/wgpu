@@ -148,9 +148,24 @@ func (p *ComputePassEncoder) DispatchWorkgroups(x, y, z uint32) {
 	native.ComputePassEncoderDispatchWorkgroups(p.Native(), x, y, z)
 }
 
+// dispatchIndirectStride is the size of one indirect dispatch record (x, y, z).
+const dispatchIndirectStride = 12
+
 // DispatchWorkgroupsIndirect reads three uint32 workgroup counts from buf at
-// offset. buf needs BufferUsageIndirect.
+// offset. buf needs BufferUsageIndirect. A released pass, a nil or released
+// buf, an offset that is not a multiple of 4 or a record past the end of buf
+// is not passed to wgpu-native (which aborts on a nil buffer); the error is
+// returned by CommandEncoder.Finish.
 func (p *ComputePassEncoder) DispatchWorkgroupsIndirect(buf *Buffer, offset uint64) {
+	const op = "ComputePassEncoderDispatchWorkgroupsIndirect"
+	if p.Native() == 0 {
+		p.enc.setErr(op, "released pass")
+		return
+	}
+	if status := checkIndirect(buf, offset, 1, dispatchIndirectStride); status != "" {
+		p.enc.setErr(op, status)
+		return
+	}
 	native.ComputePassEncoderDispatchWorkgroupsIndirect(p.Native(), buf.Native(), offset)
 }
 

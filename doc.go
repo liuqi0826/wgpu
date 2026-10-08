@@ -36,6 +36,8 @@
 // 多重间接绘制：RenderPassEncoder.MultiDrawIndirect、MultiDrawIndexedIndirect 不需要特性；
 // MultiDrawIndirectCount、MultiDrawIndexedIndirectCount 需要 FeatureMultiDrawIndirectCount
 // （本机 Vulkan 和 D3D12 支持，GL 不支持）。空 buffer、未对齐和越界在 Go 侧拦下。
+// 单次的 DrawIndirect、DrawIndexedIndirect（含 RenderBundleEncoder）和
+// ComputePassEncoder.DispatchWorkgroupsIndirect 同样在 Go 侧检查，错误由 Finish 返回。
 //
 // 后端用 InstanceOptions.Backends 选择，ParseBackends 和 BackendsFromEnv
 // 可以把 vulkan、dx12、gl 这样的名字（或环境变量 WGPU_BACKEND）转成对应的位。

@@ -304,6 +304,10 @@ if adapter.HasFeature(wgpu.FeatureImmediates) {
   会终止进程）；offset、count offset 不是 4 的倍数（count offset 的对齐 wgpu-core 不检查）；记录超出 buffer
   （按 16/20 字节做无溢出检查，wgpu-core 的 `offset + stride * count` 没有溢出检查）；count buffer 剩余不足 4 字节；
   Count 版本要求设备启用 `FeatureMultiDrawIndirectCount`。缺少 `INDIRECT` 用途等其他问题由 wgpu-core 报验证错误。
+- 单次的 `DrawIndirect`、`DrawIndexedIndirect`（RenderPass 和 RenderBundle）以及 ComputePass 的
+  `DispatchWorkgroupsIndirect` 做同样的检查（相当于 count 为 1，记录分别是 16、20、12 字节）：pass 已释放、
+  buffer 为 nil 或已释放、offset 不是 4 的倍数、记录超出 buffer。RenderPass / ComputePass 的错误由
+  `CommandEncoder.Finish` 返回，RenderBundle 的由 `RenderBundleEncoder.Finish` 返回。
 - count 为 0 时什么也不画。非 Count 版本 count 为 0 时 Go 侧直接跳过、不调用 native：开启间接验证
   （默认实例标志包含 `InstanceFlagValidationIndirectCall`）时，wgpu-core 29 在 count 为 0 时仍会画第一条记录（实测三个后端都会）。
 - 本机支持情况：非 Count 版本三个后端都可用；`FeatureMultiDrawIndirectCount` **Vulkan 和 D3D12 支持，GL 不支持**（Count 测试 Skip）。
@@ -364,8 +368,8 @@ if adapter.HasFeature(wgpu.FeatureImmediates) {
   | `wgpuBufferGetMapState`、`wgpuDeviceGetAdapterInfo`、`wgpuShaderModuleGetCompilationInfo` | 终止进程（`unimplemented!()`） | 不调用，`MapState`、`AdapterInfo`、`CompilationInfo` 在 Go 侧实现 |
   | RenderBundle 里 `SetImmediates` 的 offset 或长度不是 4 的倍数 | `assert_eq!` 失败，终止进程 | Go 侧拒绝，`RenderBundleEncoder.Finish` 返回错误 |
   | `SetImmediates` 数据达到 4 GiB | Rust 侧按 `u32` 读取，静默截断 | Go 侧拒绝 |
-  | `MultiDraw*` 传入 nil 或已释放的 indirect / count buffer | `expect` 失败，终止进程 | Go 侧拒绝，`Finish` 返回错误 |
-  | `MultiDraw*` 的 `offset + 记录大小 × 数量` 溢出、count offset 不对齐 | wgpu-core 不检查 | Go 侧检查，`Finish` 返回错误 |
+  | `MultiDraw*`、`DrawIndirect`、`DrawIndexedIndirect`、`DispatchWorkgroupsIndirect` 传入 nil 或已释放的 indirect / count buffer，或在已释放的 pass 上调用 | `expect` 失败，终止进程 | Go 侧拒绝，`Finish` 返回错误 |
+  | 上述间接调用的 `offset + 记录大小 × 数量` 溢出、count offset 不对齐 | wgpu-core 不检查 | Go 侧检查，`Finish` 返回错误 |
 
   仍然没有拦截、会终止进程的情况：
   - 提交时才发现的问题，例如命令缓冲区引用的缓冲区在提交时仍处于映射状态或已经被销毁；

@@ -157,19 +157,22 @@ func (e *RenderBundleEncoder) DrawIndexed(indexCount, instanceCount, firstIndex 
 	e.record(bundleCmd{op: opDrawIndexed, a: indexCount, b: instanceCount, c: firstIndex, base: baseVertex, d: firstInstance})
 }
 
-// DrawIndirect draws with arguments read from buf at offset.
+// DrawIndirect draws with arguments read from buf at offset. A nil or
+// released buf, an offset that is not a multiple of 4 or a record past the
+// end of buf makes Finish fail.
 func (e *RenderBundleEncoder) DrawIndirect(buf *Buffer, offset uint64) {
-	if buf.Native() == 0 {
-		e.fail("nil or released indirect buffer")
+	if status := checkIndirect(buf, offset, 1, drawIndirectStride); status != "" {
+		e.fail(status)
 		return
 	}
 	e.record(bundleCmd{op: opDrawIndirect, buf: buf, off: offset})
 }
 
-// DrawIndexedIndirect draws indexed primitives with arguments read from buf.
+// DrawIndexedIndirect draws indexed primitives with arguments read from buf,
+// checked like DrawIndirect.
 func (e *RenderBundleEncoder) DrawIndexedIndirect(buf *Buffer, offset uint64) {
-	if buf.Native() == 0 {
-		e.fail("nil or released indirect buffer")
+	if status := checkIndirect(buf, offset, 1, drawIndexedIndirectStride); status != "" {
+		e.fail(status)
 		return
 	}
 	e.record(bundleCmd{op: opDrawIndexedIndirect, buf: buf, off: offset})
