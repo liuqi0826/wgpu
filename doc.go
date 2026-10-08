@@ -23,6 +23,20 @@
 // ResolveQuerySet 之后用 QuerySet.ParsePipelineStatistics 解析成 PipelineStatistics 结构体。
 // 本机测试中只有 Vulkan 后端支持这个特性，D3D12 和 GL 不支持。
 //
+// wgpu-native 29 没有实现 wgpuBufferGetMapState、wgpuDeviceGetAdapterInfo 和
+// wgpuShaderModuleGetCompilationInfo（调用即终止进程），所以 Buffer.MapState、Device.AdapterInfo、
+// ShaderModule.CompilationInfo 在 Go 侧实现：分别来自映射跟踪、请求设备时保存的 Adapter.Info、
+// 以及在内部错误域里重新编译一次 WGSL 得到的错误（只有错误，没有警告）。
+//
+// Immediate data：用 FeatureImmediates 并提高 RequiredLimits.MaxImmediateSize 请求设备，
+// PipelineLayoutDescriptor.ImmediateSize 声明大小，RenderPass、ComputePass、RenderBundle 的
+// SetImmediates 写入。offset 和长度必须是 4 的倍数，长度不能达到 4 GiB（wgpu-native 按 32 位读取），
+// 这些在 Go 侧检查，错误由 Finish 返回。
+//
+// 多重间接绘制：RenderPassEncoder.MultiDrawIndirect、MultiDrawIndexedIndirect 不需要特性；
+// MultiDrawIndirectCount、MultiDrawIndexedIndirectCount 需要 FeatureMultiDrawIndirectCount
+// （本机 Vulkan 和 D3D12 支持，GL 不支持）。空 buffer、未对齐和越界在 Go 侧拦下。
+//
 // 后端用 InstanceOptions.Backends 选择，ParseBackends 和 BackendsFromEnv
 // 可以把 vulkan、dx12、gl 这样的名字（或环境变量 WGPU_BACKEND）转成对应的位。
 //

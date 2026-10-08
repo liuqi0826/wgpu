@@ -117,11 +117,13 @@ func main() {
 ## 已封装的功能
 
 - 实例、适配器（`Info`、`Limits`、`Features`）、设备（`RequestDeviceWith` 支持
-  `RequiredFeatures`、`RequiredLimits`、`OnLost`、`OnUncapturedError`）
-- 缓冲区：`WriteBuffer`、阻塞的 `Map`、异步的 `MapAsync`（返回 channel）和 `MapAsyncFunc`（回调）
+  `RequiredFeatures`、`RequiredLimits`、`OnLost`、`OnUncapturedError`；`Device.AdapterInfo`）
+- 缓冲区：`WriteBuffer`、阻塞的 `Map`、异步的 `MapAsync`（返回 channel）和 `MapAsyncFunc`（回调）、`MapState`
 - 纹理、纹理视图、采样器、`Queue.WriteTexture`、缓冲区和纹理之间的拷贝
-- 着色器（WGSL）、绑定组和布局、管线布局、渲染管线、计算管线（含 override 常量和自动布局）
+- 着色器（WGSL，`ShaderModule.CompilationInfo`）、绑定组和布局、管线布局、渲染管线、计算管线（含 override 常量和自动布局）
 - RenderPass、ComputePass（含间接绘制和间接派发）、RenderBundle
+- 多重间接绘制：`MultiDrawIndirect`、`MultiDrawIndexedIndirect`、`MultiDrawIndirectCount`、`MultiDrawIndexedIndirectCount`
+- Immediate data：RenderPass、ComputePass、RenderBundle 的 `SetImmediates`
 - QuerySet：遮挡查询、pass 的时间戳写入、pipeline statistics 查询、`ResolveQuerySet`、`Queue.TimestampPeriod`
 - 调试标记：四种编码器的 `PushDebugGroup` / `PopDebugGroup` / `InsertDebugMarker`
 - `Queue.OnSubmittedWorkDone`（返回 channel）和阻塞的 `WaitSubmittedWorkDone`
@@ -231,6 +233,77 @@ if adapter.HasFeature(wgpu.FeaturePipelineStatisticsQuery) {
   同一个三角形画 4 个实例时裁剪 4、片元 16384，但顶点仍是 3（着色器没用 instance_index，驱动复用了顶点结果），
   所以顶点调用次数只能当作下限参考。compute 调用次数严格等于工作组数 × 每组线程数。
 
+## Go 侧实现的查询：MapState、AdapterInfo、CompilationInfo
+
+wgpu-native 29 的 `wgpuBufferGetMapState`、`wgpuDeviceGetAdapterInfo`、`wgpuShaderModuleGetCompilationInfo`
+都在 `unimplemented.rs` 里，调用即终止进程（实测退出码 0xC0000409）。本包不调用它们，改在 Go 侧实现：
+
+- `Buffer.MapState()`：来自 Go 侧的映射跟踪。`MapAsync` 发出后是 `Pending`，成功后是 `Mapped`；
+  映射失败、`Unmap`、`Release`、设备释放或丢失都会回到 `Unmapped`。
+- `Device.AdapterInfo()`：`RequestDeviceWith` 请求设备时读取一次 `Adapter.Info` 并保存，
+  adapter 或 device 释放之后仍然可以读取。
+- `ShaderModule.CompilationInfo()`：第一次调用时在内部错误域里用保存的 WGSL 源码重新创建一个临时模块，
+  把验证错误转成一条 `CompilationMessageTypeError` 消息，结果缓存。`Message` 是 naga 的完整诊断，
+  `LineNum` / `LinePos` 取自诊断里的第一个源码位置（解析错误和多数验证错误都有，没有位置时为 0）。
+  合法的着色器返回空切片。限制：wgpu-core 不把 naga 的警告传出来，所以只有错误；不提供 UTF-16 的
+  offset/length；模块或设备已释放、设备丢失时返回错误。`CreateShaderModuleWGSL` 本身的行为不变，
+  无效着色器的错误仍然进入当前错误域或 `OnUncapturedError`。
+
+## Immediate data（SetImmediates）
+
+wgpu-native 扩展特性 `Immediates`（`wgpu.FeatureImmediates`）。默认的 `MaxImmediateSize` 限制是 0，
+所以请求设备时要同时提高这个限制：
+
+```go
+if adapter.HasFeature(wgpu.FeatureImmediates) {
+	best, _ := adapter.Limits()
+	limits := wgpu.UndefinedLimits()
+	limits.MaxImmediateSize = best.MaxImmediateSize
+	device, err := adapter.RequestDeviceWith(&wgpu.DeviceOptions{
+		RequiredFeatures: []native.FeatureName{wgpu.FeatureImmediates},
+		RequiredLimits:   &limits,
+	})
+	layout, err := device.CreatePipelineLayout(&wgpu.PipelineLayoutDescriptor{ImmediateSize: 32})
+	// WGSL：var<immediate> imm: S;（不需要 enable 指令）
+	pass.SetPipeline(pipeline) // 设置 pipeline 会把 immediate data 清零，所以 SetImmediates 放在它后面
+	pass.SetImmediates(0, data)
+}
+```
+
+- `RenderPassEncoder`、`ComputePassEncoder`、`RenderBundleEncoder` 都有 `SetImmediates(offset uint32, data []byte)`，
+  调用 wgpu-native 的 `wgpu*EncoderSetImmediates`。空数据什么也不做。
+- Go 侧拦截，错误由 `CommandEncoder.Finish` 或 `RenderBundleEncoder.Finish` 返回：设备没启用 `FeatureImmediates`、
+  pass 已释放、offset 或数据长度不是 4 的倍数、数据长度达到 4 GiB、offset + 长度超过 4 GiB。
+  - 4 GiB：头文件里 size 是 `size_t`，wgpu-native 的 Rust 实现声明为 `u32`，只取低 32 位。
+    实测 2^32+16 字节会被静默当成 16 字节，所以 Go 侧拒绝。
+  - RenderBundle 里 wgpu-core 用 `assert_eq!` 检查对齐，不对齐会终止进程，所以必须在 Go 侧拦下。
+- 范围超出 pipeline layout 的 `ImmediateSize`、没有设置 pipeline：pass 里由 wgpu-core 报验证错误（`Finish` 返回）；
+  bundle 里由 `Finish` 的验证 pass 报出，不会走到会终止进程的 bundle finish。
+- 本机（RTX 4060 Ti）三个后端都支持，适配器的 `MaxImmediateSize`：Vulkan 256、D3D12 128、GL 256。
+
+## 多重间接绘制
+
+`RenderPassEncoder` 的四个方法，调用 wgpu-native 对应的 `wgpuRenderPassEncoderMultiDraw*`：
+
+| 方法 | 每条记录 | 需要的特性 |
+| --- | --- | --- |
+| `MultiDrawIndirect(buf, offset, count)` | 16 字节：vertexCount、instanceCount、firstVertex、firstInstance | 无 |
+| `MultiDrawIndexedIndirect(buf, offset, count)` | 20 字节：indexCount、instanceCount、firstIndex、baseVertex（int32）、firstInstance | 无 |
+| `MultiDrawIndirectCount(buf, offset, countBuf, countOffset, maxCount)` | 同上，绘制数量由 GPU 从 `countBuf` 读取并截断到 `maxCount` | `FeatureMultiDrawIndirectCount` |
+| `MultiDrawIndexedIndirectCount(...)` | 同上 | `FeatureMultiDrawIndirectCount` |
+
+- wgpu.h 只有 `MultiDrawIndirectCount` 这个特性，非 Count 版本不需要特性（没有该特性时 wgpu 可能用多次间接绘制模拟）。
+- Go 侧拦截（错误由 `Finish` 返回）：pass 已释放；indirect 或 count buffer 为 nil 或已释放（wgpu-native 里是 `expect`，
+  会终止进程）；offset、count offset 不是 4 的倍数（count offset 的对齐 wgpu-core 不检查）；记录超出 buffer
+  （按 16/20 字节做无溢出检查，wgpu-core 的 `offset + stride * count` 没有溢出检查）；count buffer 剩余不足 4 字节；
+  Count 版本要求设备启用 `FeatureMultiDrawIndirectCount`。缺少 `INDIRECT` 用途等其他问题由 wgpu-core 报验证错误。
+- count 为 0 时什么也不画。
+- 本机支持情况：非 Count 版本三个后端都可用；`FeatureMultiDrawIndirectCount` **Vulkan 和 D3D12 支持，GL 不支持**（Count 测试 Skip）。
+- D3D12 上的 `@builtin(vertex_index)`：只有实例带 `InstanceFlagValidationIndirectCall` 时，间接绘制（包括原有的
+  `DrawIndirect`）里的 `vertex_index` 才包含 firstVertex / baseVertex。`CreateInstance(nil)` 带这个标志；
+  `InstanceOptions` 的 `Flags` 为 0 时不带。Count 版本在 D3D12 上无论如何都不包含（wgpu-hal 29 的限制）。
+  从顶点缓冲区取顶点不受影响。Vulkan 和 GL 没有这个问题。
+
 ## 异步回调与轮询
 
 这份 wgpu-native 没有实现 `wgpuInstanceWaitAny`，也没有后台线程：
@@ -279,6 +352,11 @@ if adapter.HasFeature(wgpu.FeaturePipelineStatisticsQuery) {
   | `CreateQuerySet` 用未知查询类型、统计查询没有统计项列表或含未知统计项 | 终止进程 | Go 侧返回错误 |
   | 遮挡查询没关、嵌套、没有 Begin 就 End、query index 越界或在同一 pass 内重复使用、pass 没设 `OcclusionQuerySet` 就 Begin | 不终止进程，也不会漏检带进提交：记一个验证错误，`Finish` 时报出，但对外只有笼统的 `Validation Error` | Go 侧跟踪每个 pass 的遮挡查询状态，有问题的 Begin/End 不下发给 native，`Finish` 返回具体原因（例如 `occlusion query 1 still active`）；`OcclusionQuerySet` 不是遮挡类型时 `BeginRenderPass` 直接返回错误。同一 index 在后续 pass 里可以再用 |
   | compute pass 结束时 pipeline statistics 查询没关 | wgpu-core 不检查，会带进提交 | Go 侧跟踪 Begin/End，`Finish` 返回错误 |
+  | `wgpuBufferGetMapState`、`wgpuDeviceGetAdapterInfo`、`wgpuShaderModuleGetCompilationInfo` | 终止进程（`unimplemented!()`） | 不调用，`MapState`、`AdapterInfo`、`CompilationInfo` 在 Go 侧实现 |
+  | RenderBundle 里 `SetImmediates` 的 offset 或长度不是 4 的倍数 | `assert_eq!` 失败，终止进程 | Go 侧拒绝，`RenderBundleEncoder.Finish` 返回错误 |
+  | `SetImmediates` 数据达到 4 GiB | Rust 侧按 `u32` 读取，静默截断 | Go 侧拒绝 |
+  | `MultiDraw*` 传入 nil 或已释放的 indirect / count buffer | `expect` 失败，终止进程 | Go 侧拒绝，`Finish` 返回错误 |
+  | `MultiDraw*` 的 `offset + 记录大小 × 数量` 溢出、count offset 不对齐 | wgpu-core 不检查 | Go 侧检查，`Finish` 返回错误 |
 
   仍然没有拦截、会终止进程的情况：
   - 提交时才发现的问题，例如命令缓冲区引用的缓冲区在提交时仍处于映射状态或已经被销毁；
@@ -297,6 +375,9 @@ if adapter.HasFeature(wgpu.FeaturePipelineStatisticsQuery) {
 
 - D3D12 后端下适配器的 `Description` 是空字符串。
 
+- D3D12 上间接绘制的 `vertex_index` 需要 `InstanceFlagValidationIndirectCall`，Count 版本的多重间接绘制始终不含
+  firstVertex，见“多重间接绘制”。
+
 ## 测试
 
 ```sh
@@ -309,6 +390,8 @@ go test -count=1 ./...        # 指定后端（cmd 写法）
 
 测试需要真实的 GPU 和 DLL。`TestTimestampQuery` 在适配器不支持 `TimestampQuery` 时会跳过，
 `TestPipelineStatisticsRender` / `TestPipelineStatisticsCompute` 在不支持 `PipelineStatisticsQuery` 时跳过（本机 D3D12 和 GL）。
+`SetImmediates` 的测试在不支持 `Immediates` 时跳过（本机三个后端都支持），多重间接绘制的 Count 子测试
+在不支持 `MultiDrawIndirectCount` 时跳过（本机 GL）。
 
 ## 代码生成
 
