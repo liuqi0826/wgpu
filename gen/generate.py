@@ -44,6 +44,21 @@ PRIM = {
     "void": ("void", 0, 0),
 }
 
+# Functions whose Rust definition in wgpu-native uses a 1-byte `bool` where the
+# headers declare a 32-bit WGPUBool (checked against trunk 589e6caa src/):
+#   wgpuDevicePoll                          wait and return   lib.rs:4489
+#   wgpuDeviceStartGraphicsDebuggerCapture  return            lib.rs:2609
+#   wgpuInstanceHasWGSLLanguageFeature      return            unimplemented.rs:111
+# A Rust bool return only defines AL, so the upper bits of EAX are not
+# meaningful. Every WGPUBool parameter and return of these functions is bound
+# as Go bool: purego passes a bool as 0 or 1 and decodes a bool return from the
+# low byte only, which is correct whether the C side is 1 or 4 bytes wide.
+RUST_BOOL_FUNCS = {
+    "wgpuDevicePoll",
+    "wgpuDeviceStartGraphicsDebuggerCapture",
+    "wgpuInstanceHasWGSLLanguageFeature",
+}
+
 
 def strip_comments(src: str) -> str:
     out = []
@@ -255,6 +270,7 @@ class API:
         self.consts: list[tuple[str, str, str, str]] = []
         self.functions: list[dict] = []
         self.enum_names: dict[str, str] = {}
+        self.declared: set[str] = set()
 
     def add(self, cname: str, info: object) -> None:
         if cname in self.types:
@@ -482,6 +498,7 @@ def parse_function(api: API, stmt: str, exports: set[str]) -> None:
     if not match:
         raise SystemExit(f"bad function {stmt[:120]!r}")
     cname = match.group("name")
+    api.declared.add(cname)
     if cname not in exports:
         return
     ret = go_return_type(match.group("ret"), api)
@@ -497,6 +514,8 @@ def parse_function(api: API, stmt: str, exports: set[str]) -> None:
             if pname in KEYWORDS:
                 pname += "_"
             args.append((pname, go_param_type(found.group("type"), api)))
+    if cname in RUST_BOOL_FUNCS:
+        ret, args = rust_bool(cname, ret, args)
     api.functions.append(
         {
             "c": cname,
@@ -505,6 +524,22 @@ def parse_function(api: API, stmt: str, exports: set[str]) -> None:
             "args": args,
         }
     )
+
+
+def rust_bool(cname: str, ret: str | None, args: list[tuple[str, str]]) -> tuple[str | None, list[tuple[str, str]]]:
+    changed = 0
+    if ret == "Bool":
+        ret = "bool"
+        changed += 1
+    out = []
+    for pname, typ in args:
+        if typ == "Bool":
+            typ = "bool"
+            changed += 1
+        out.append((pname, typ))
+    if not changed:
+        raise SystemExit(f"{cname} is in RUST_BOOL_FUNCS but has no WGPUBool parameter or return")
+    return ret, out
 
 
 def parse_static_const(api: API, stmt: str) -> None:
@@ -762,6 +797,9 @@ def main() -> None:
     api = API()
     for stmt in split_statements(src):
         classify(api, stmt, export_set)
+    unknown = sorted(RUST_BOOL_FUNCS - api.declared)
+    if unknown:
+        raise SystemExit("RUST_BOOL_FUNCS names not declared in the headers:\n" + "\n".join(unknown))
     bound = {fn["c"] for fn in api.functions}
     missing = sorted(export_set - bound)
     if missing:

@@ -308,7 +308,7 @@ var InstanceCreateSurface func(instance Instance, descriptor *SurfaceDescriptor)
 var InstanceGetWGSLLanguageFeatures func(instance Instance, features *SupportedWGSLLanguageFeatures)
 
 // InstanceHasWGSLLanguageFeature is wgpuInstanceHasWGSLLanguageFeature.
-var InstanceHasWGSLLanguageFeature func(instance Instance, feature WGSLLanguageFeatureName) Bool
+var InstanceHasWGSLLanguageFeature func(instance Instance, feature WGSLLanguageFeatureName) bool
 
 // InstanceProcessEvents is wgpuInstanceProcessEvents.
 var InstanceProcessEvents func(instance Instance)
@@ -632,7 +632,7 @@ var QueueSubmitForIndex func(queue Queue, commandCount uintptr, commands *Comman
 var QueueGetTimestampPeriod func(queue Queue) float32
 
 // DevicePoll is wgpuDevicePoll.
-var DevicePoll func(device Device, wait Bool, submissionIndex *SubmissionIndex) Bool
+var DevicePoll func(device Device, wait bool, submissionIndex *SubmissionIndex) bool
 
 // DeviceCreateShaderModuleSpirV is wgpuDeviceCreateShaderModuleSpirV.
 var DeviceCreateShaderModuleSpirV func(device Device, descriptor *ShaderModuleDescriptorSpirV) ShaderModule
@@ -686,7 +686,7 @@ var ComputePassEncoderWriteTimestamp func(computePassEncoder ComputePassEncoder,
 var RenderPassEncoderWriteTimestamp func(renderPassEncoder RenderPassEncoder, querySet QuerySet, queryIndex uint32)
 
 // DeviceStartGraphicsDebuggerCapture is wgpuDeviceStartGraphicsDebuggerCapture.
-var DeviceStartGraphicsDebuggerCapture func(device Device) Bool
+var DeviceStartGraphicsDebuggerCapture func(device Device) bool
 
 // DeviceStopGraphicsDebuggerCapture is wgpuDeviceStopGraphicsDebuggerCapture.
 var DeviceStopGraphicsDebuggerCapture func(device Device)

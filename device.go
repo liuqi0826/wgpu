@@ -90,16 +90,13 @@ func (d *Device) isLost() bool {
 }
 
 // Poll blocks when wait is true until the device queue is idle.
-// It returns false without polling on a lost device.
+// It reports whether the queue is empty, and returns false without polling on
+// a lost device.
 func (d *Device) Poll(wait bool) bool {
 	if d.isLost() {
 		return false
 	}
-	flag := native.False
-	if wait {
-		flag = native.True
-	}
-	return native.DevicePoll(d.Native(), flag, nil) == native.True
+	return native.DevicePoll(d.Native(), wait, nil)
 }
 
 // Release destroys the device and drops its queue reference. User callbacks
