@@ -22,6 +22,10 @@ type Device struct {
 	// scopeMu serialises error scopes. wgpu-native keeps one scope stack per
 	// device, so a guarded call must not interleave with another push or pop.
 	scopeMu sync.Mutex
+
+	// adapterInfo is read from the adapter by RequestDeviceWith.
+	adapterInfo    AdapterInfo
+	adapterInfoErr error
 }
 
 // Native returns the raw device handle.
@@ -30,6 +34,17 @@ func (d *Device) Native() native.Device {
 		return 0
 	}
 	return native.Device(d.ptr.Load())
+}
+
+// AdapterInfo returns the info of the adapter the device was requested from.
+// wgpu-native 29 does not implement wgpuDeviceGetAdapterInfo (it aborts the
+// process), so RequestDeviceWith reads Adapter.Info once and this returns that
+// copy. It stays available after the adapter or the device is released.
+func (d *Device) AdapterInfo() (AdapterInfo, error) {
+	if d == nil {
+		return AdapterInfo{}, &Error{Op: "DeviceGetAdapterInfo", Status: "nil device"}
+	}
+	return d.adapterInfo, d.adapterInfoErr
 }
 
 // Queue returns the device queue. The handle remains owned by the device.

@@ -172,6 +172,7 @@ func (a *Adapter) RequestDeviceWith(opts *DeviceOptions) (*Device, error) {
 	}
 	queue := native.DeviceGetQueue(native.Device(res.handle))
 	dev := &Device{state: state, slot: slot}
+	dev.adapterInfo, dev.adapterInfoErr = a.Info()
 	dev.ptr.Store(res.handle)
 	dev.queue.Store(uintptr(queue))
 	return dev, nil
