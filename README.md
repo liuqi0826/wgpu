@@ -1,0 +1,244 @@
+# wgpu
+
+[wgpu-native](https://github.com/gfx-rs/wgpu-native) 的 Go 绑定，**不使用 CGO**。
+
+动态库用 `syscall.LoadLibrary` 加载，函数调用走 [purego](https://github.com/ebitengine/purego)，
+不需要 C 编译器。`native` 包是按 `webgpu.h` / `wgpu.h`（wgpu 29）生成的完整 C API，
+根包在它之上提供 Go 风格的封装。
+
+```go
+import "github.com/liuqi0826/wgpu"
+```
+
+## 要求
+
+- Windows amd64（目前唯一支持的平台，所有文件都带 `//go:build windows && amd64`）
+- Go 1.26.8 或更高（见 `go.mod`）
+- wgpu-native 29 的 `wgpu_native.dll`，开发和测试使用 v29 系列
+
+唯一的依赖是 `github.com/ebitengine/purego`。
+
+## 安装
+
+1. 获取模块：
+
+   ```sh
+   go get github.com/liuqi0826/wgpu
+   ```
+
+2. 从 [wgpu-native releases](https://github.com/gfx-rs/wgpu-native/releases) 下载 v29 的
+   `wgpu-windows-x86_64-msvc-release.zip`，取出其中的 `wgpu_native.dll`。
+
+3. 让程序能找到 DLL，下面两种方式任选其一：
+
+   - 设置环境变量 `WGPU_NATIVE_PATH` 为 **DLL 文件的完整路径**，例如
+     `set WGPU_NATIVE_PATH=C:\libs\wgpu\wgpu_native.dll`。设置了这个变量就只用它，
+     文件不存在会直接报错。
+   - 把 DLL 放在下列位置之一，按顺序查找：
+     1. `<工作目录>\lib\wgpu_native.dll`
+     2. `<工作目录>\wgpu_native.dll`
+     3. `<工作目录>\..\lib\wgpu_native.dll`
+     4. `<工作目录>\..\..\lib\wgpu_native.dll`
+     5. `<exe 所在目录>\wgpu_native.dll`
+     6. `<exe 所在目录>\lib\wgpu_native.dll`
+
+   也可以在创建实例之前调用 `wgpu.Load(path)` 显式指定路径。`go run` 生成的 exe 在临时目录里，
+   所以用 `go run` 时靠的是工作目录或 `WGPU_NATIVE_PATH`。
+
+本仓库自己的测试和示例使用 `lib\wgpu_native.dll`（DLL 不提交到仓库，见 `.gitignore`）。
+
+## 最小用法
+
+把一段数据拷到另一个缓冲区再读回来：
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"github.com/liuqi0826/wgpu"
+	"github.com/liuqi0826/wgpu/native"
+)
+
+func check(err error) {
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func main() {
+	// 加载 DLL 并创建实例；nil 表示启用 DLL 支持的所有后端。
+	instance, err := wgpu.CreateInstance(nil)
+	check(err)
+	defer instance.Release()
+
+	adapter, err := instance.RequestAdapter(&native.RequestAdapterOptions{
+		PowerPreference: native.PowerPreferenceHighPerformance,
+	})
+	check(err)
+	defer adapter.Release()
+	info, err := adapter.Info()
+	check(err)
+	fmt.Println(info.Device, info.Backend)
+
+	device, err := adapter.RequestDevice()
+	check(err)
+	defer device.Release()
+	queue := device.Queue()
+
+	src, err := device.CreateBuffer(native.BufferUsageCopySrc|native.BufferUsageCopyDst, 16, false)
+	check(err)
+	defer src.Release()
+	dst, err := device.CreateBuffer(native.BufferUsageMapRead|native.BufferUsageCopyDst, 16, false)
+	check(err)
+	defer dst.Release()
+	queue.WriteBuffer(src, 0, []byte("hello, wgpu-go!!"))
+
+	enc, err := device.CreateCommandEncoder()
+	check(err)
+	enc.CopyBufferToBuffer(src, 0, dst, 0, 16)
+	commands, err := enc.Finish() // 命令里的验证错误在这里返回
+	check(err)
+	queue.Submit(commands)
+	commands.Release()
+
+	check(dst.Map(native.MapModeRead, 0, 0)) // 阻塞，内部轮询设备
+	data, err := dst.ReadMapped(0, 16)
+	check(err)
+	dst.Unmap()
+	fmt.Printf("%s\n", data)
+}
+```
+
+所有句柄都要 `Release`。更完整的用法见 `example/` 和各个 `_test.go`。
+
+## 已封装的功能
+
+- 实例、适配器（`Info`、`Limits`、`Features`）、设备（`RequestDeviceWith` 支持
+  `RequiredFeatures`、`RequiredLimits`、`OnLost`、`OnUncapturedError`）
+- 缓冲区：`WriteBuffer`、阻塞的 `Map`、异步的 `MapAsync`（返回 channel）和 `MapAsyncFunc`（回调）
+- 纹理、纹理视图、采样器、`Queue.WriteTexture`、缓冲区和纹理之间的拷贝
+- 着色器（WGSL）、绑定组和布局、管线布局、渲染管线、计算管线（含 override 常量和自动布局）
+- RenderPass、ComputePass（含间接绘制和间接派发）、RenderBundle
+- QuerySet：遮挡查询、pass 的时间戳写入、`ResolveQuerySet`、`Queue.TimestampPeriod`
+- `Queue.OnSubmittedWorkDone`（返回 channel）和阻塞的 `WaitSubmittedWorkDone`
+- Win32 窗口表面：`Instance.CreateSurfaceHWND`、`Surface.ConfigureWith`、`GetCurrentTexture`、`Present`
+- 错误域 `PushErrorScope` / `PopErrorScope`
+
+## 后端选择
+
+`InstanceOptions.Backends` 决定实例启用哪些后端，零值表示 DLL 支持的全部后端：
+
+```go
+instance, err := wgpu.CreateInstance(&wgpu.InstanceOptions{Backends: native.InstanceBackendDX12})
+```
+
+`wgpu.ParseBackends("vulkan")` 把名字转成对应的位。可用的名字有 `vulkan`（`vk`）、`dx12`（`d3d12`）、
+`gl`（`opengl`）、`metal`、`primary`、`secondary`、`all`，多个名字用逗号分隔。
+`wgpu.BackendsFromEnv(def)` 读取环境变量 `WGPU_BACKEND`，没设置时返回 `def`。
+
+- 测试读取 `WGPU_BACKEND`，默认用 primary 后端：
+
+  ```sh
+  set WGPU_BACKEND=dx12
+  go test -count=1 ./...
+  ```
+
+- 示例都有 `-backend` 参数，默认取 `WGPU_BACKEND`。
+
+在 RTX 4060 Ti 上，Vulkan、D3D12、GL 三个后端都跑通了全部测试和示例。
+
+## 示例
+
+在仓库根目录运行（DLL 在 `lib\` 下）：
+
+| 示例 | 作用 | 参数 |
+| --- | --- | --- |
+| `go run ./example/info` | 列出所有适配器 | `-backend` |
+| `go run ./example/compute` | 在 GPU 上把数组每个元素乘 2 并校验，支持时打印时间戳查询测出的 GPU 耗时 | `-n` 元素个数（默认 1048576），`-backend` |
+| `go run ./example/triangle` | Win32 窗口里画一个三角形，处理窗口缩放和 Outdated/Lost/Suboptimal | `-frames N` 画 N 帧后退出，`-resize` 中途改变窗口大小，`-ignore-wmsize` 只依靠 Outdated/Suboptimal 重新配置，`-backend` |
+| `go run ./example/textured` | 窗口里画贴了代码生成的棋盘格纹理的旋转四边形，使用采样器、绑定组和深度纹理，窗口大小变化时重建深度纹理 | `-frames N`，`-resize`，`-backend` |
+
+例如：`go run ./example/textured -backend dx12 -frames 300 -resize`。
+
+## 异步回调与轮询
+
+这份 wgpu-native 没有实现 `wgpuInstanceWaitAny`，也没有后台线程：
+
+- 请求适配器、请求设备、弹出错误域的回调在调用内部同步执行，对应的 Go 函数直接返回结果。
+- 缓冲区映射和 `OnSubmittedWorkDone` 的回调**只在轮询设备时触发**，触发时机是 `Device.Poll`，
+  或者之后某次 `Queue.Submit` 做内部维护的时候。空闲队列也不会在调用内部立即触发。
+  - `MapAsync` / `OnSubmittedWorkDone` 返回的 channel 需要有人轮询，任何 goroutine 调用 `Device.Poll` 都可以。
+  - 阻塞的 `Map` 和 `WaitSubmittedWorkDone` 自己会轮询。`Map` 最多等 5 秒。
+- 本地回调只把结果写进带缓冲的 channel。用户回调（`OnLost`、`OnUncapturedError`、`MapAsyncFunc`）
+  在单独的 goroutine 上执行，可以在里面再调用本包。
+- 设备 `Release` 或丢失时，尚未完成的映射和 work-done 会立即以错误结束。
+  `Release` 之后不再调用 `OnLost` / `OnUncapturedError`。
+
+## 错误处理
+
+- 同步的失败返回 `*wgpu.Error`（`Op`、`Status`、`Message`）。
+- `CommandEncoder.Finish` 在内部错误域里执行。编码器或 pass 里记录的验证错误从这里返回，
+  这时不返回命令缓冲区，原因见下面的“已知限制”。
+- `CreateQuerySet` 和 `RenderBundleEncoder.Finish` 也直接返回验证错误。
+- 其他 `Create*` 和 wgpu-native 一样：即使描述符无效也会返回句柄，错误进入当前错误域或
+  `OnUncapturedError`，也可以用 `Device.Err()` 查询。
+- `PushErrorScope` 只支持 `Validation` 和 `OutOfMemory`。wgpu-native 遇到其他过滤器会终止进程，
+  所以本包改为在 Go 侧 panic。
+
+## 已知限制
+
+- **只支持 Windows amd64。**
+
+- **wgpu-native 在不少调用失败时直接终止整个进程**（Rust panic，`handle_error_fatal`），
+  不会走错误域，也不会调用回调。本包在 Go 侧尽量提前拦截：
+
+  | 情况 | wgpu-native 的行为 | 本包的处理 |
+  | --- | --- | --- |
+  | 设备丢失后调用 `Queue.Submit` | 终止进程 | 直接跳过，什么也不做 |
+  | 设备丢失后调用 `Surface.ConfigureWith` / `Configure` | 终止进程 | 直接跳过 |
+  | 设备丢失后调用 `Device.Poll` | 失败时终止进程 | 不调用，返回 `false` |
+  | 设备丢失后调用 `Buffer.Map` / `MapAsync` / `OnSubmittedWorkDone` | 永远不会完成 | 立即返回丢失错误 |
+  | 对未配置的 surface 或在设备丢失后调用 `GetCurrentTexture` | 终止进程 | 不调用，返回 `SurfaceGetCurrentTextureStatusError` |
+  | 提交带验证错误的命令缓冲区 | 终止进程 | `Finish` 返回错误，不给出命令缓冲区 |
+  | 创建 RenderBundle 编码器或 bundle `Finish` 时出错 | 终止进程 | 命令先在 Go 侧记录；创建时检查格式数量和采样数；`Finish` 先在 1x1 临时附件上用一个不提交的 RenderPass 重放命令做验证，通过后才交给 wgpu-native |
+  | 取未映射、未对齐或越界的映射范围 | 终止进程 | Go 侧跟踪映射状态和范围，`MappedBytes` / `ReadMapped` 返回错误 |
+  | 传入空句柄（pipeline、bundle、query set 等） | 终止进程 | 能检查的地方返回错误，或由 `CommandEncoder.Finish` 报告 |
+  | `PushErrorScope` 用 `Internal` 过滤器 | 终止进程 | Go 侧 panic |
+
+  仍然没有拦截、会终止进程的情况：
+  - 提交时才发现的问题，例如命令缓冲区引用的缓冲区在提交时仍处于映射状态或已经被销毁；
+  - `Surface.ConfigureWith` 的参数本身无效（格式或尺寸不受支持）；
+  - `GetCurrentTexture` 返回状态以外的失败；
+  - 创建 surface 失败。
+
+- **设备丢失只能部分感知。** wgpu-native 29 不转发 wgpu-core 的设备丢失回调，只有当后续某个调用
+  因为设备丢失而失败时才报告。`Device.Destroy` 由 Go 侧记录丢失并触发一次 `OnLost`；
+  驱动层面的真实丢失要等 wgpu-native 报告之后，上面这些拦截才会生效。
+
+- **错误域按设备共享，不按线程区分。** 内部的错误域（`Finish`、`MapAsync`、`CreateQuerySet` 等）
+  用设备级的锁串行化。如果其他 goroutine 恰好在同一时刻向同一设备产生错误，这些错误可能被归到内部错误域里。
+
+- 本 DLL 的 `wgpuGetVersion` 是空实现，`wgpu.Version()` 总是返回 0。
+
+- D3D12 后端下适配器的 `Description` 是空字符串。
+
+## 测试
+
+```sh
+go vet ./...
+go test -count=1 ./...        # 默认 primary 后端
+
+set WGPU_BACKEND=dx12
+go test -count=1 ./...        # 指定后端（cmd 写法）
+```
+
+测试需要真实的 GPU 和 DLL。`TestTimestampQuery` 在适配器不支持 `TimestampQuery` 时会跳过。
+
+## 代码生成
+
+`native/types.go`、`native/funcs.go`、`native/layout_test.go` 由 `gen/generate.py` 根据
+`third_party/` 下的头文件生成（`go generate ./native`，需要 Python 3），不要手改。
+手写的补充放在 `native/extra.go` 等文件里。

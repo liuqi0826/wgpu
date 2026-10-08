@@ -7,7 +7,7 @@
 // 动态库通过 syscall.LoadLibrary 加载，函数调用走 purego。完整的 C API
 // 在 native 包里，类型和函数与 webgpu.h / wgpu.h（wgpu 29）一一对应。
 // 本包在此之上提供创建实例、枚举适配器、请求设备、缓冲区、着色器和窗口表面的常用路径，
-// 以及纹理、采样器、绑定组、渲染管线、计算管线、RenderPass、ComputePass 和拷贝命令。
+// 以及纹理、采样器、绑定组、渲染管线、计算管线、RenderPass、ComputePass、RenderBundle、QuerySet 和拷贝命令。
 // 描述符用 Go 结构体表示，零值字段取 WebGPU 的常用默认值，内部负责组装 native 结构体和 StringView。
 // 示例见 example/triangle、example/textured 和 example/compute。
 //
@@ -21,7 +21,9 @@
 // 失败时会直接终止进程，所以设备丢失后这些方法什么也不做，用 Device.Lost 或 Device.Err 查询状态。
 //
 // 当前这份 wgpu-native 会在请求适配器、请求设备和弹出错误域时同步调用回调，
-// 并且没有实现 wgpuInstanceWaitAny，所以这些调用不会进入 WaitAny。
+// 并且没有实现 wgpuInstanceWaitAny，所以这些调用不会进入 WaitAny。缓冲区映射（MapAsync）
+// 和 Queue.OnSubmittedWorkDone 只在轮询设备时完成（Device.Poll 或之后的 Queue.Submit）。
+// 安装方式、各示例说明和已知限制见 README.md。
 //
 // 使用前把 wgpu_native.dll 放在 lib/ 目录，或设置环境变量 WGPU_NATIVE_PATH。
 // 句柄需要调用 Release。native 包中的指针字段是 uintptr，指向的 Go 内存必须在
