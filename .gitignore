@@ -1,0 +1,8 @@
+﻿*.exe
+*.test
+*.pdb
+*.out
+lib/*.dll
+lib/*.lib
+__pycache__/
+
