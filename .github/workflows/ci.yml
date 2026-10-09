@@ -1,0 +1,33 @@
+# Windows CI for checks that do not need a GPU or wgpu_native.dll.
+# Full adapter/device tests stay local (lib/wgpu_native.dll is gitignored).
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Vet, build, native ABI
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Go build
+        run: go build ./...
+
+      - name: Native layout and ABI tests
+        run: go test -count=1 ./native
