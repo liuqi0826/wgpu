@@ -35,6 +35,7 @@ func newTestWindow(t *testing.T, w, h int32) uintptr {
 }
 
 type surfaceFixture struct {
+	hwnd     uintptr
 	instance *Instance
 	surface  *Surface
 	adapter  *Adapter
@@ -45,7 +46,7 @@ type surfaceFixture struct {
 func newSurfaceFixture(t *testing.T) *surfaceFixture {
 	t.Helper()
 	hwnd := newTestWindow(t, 64, 64)
-	f := &surfaceFixture{instance: testInstance(t)}
+	f := &surfaceFixture{hwnd: hwnd, instance: testInstance(t)}
 	t.Cleanup(f.instance.Release)
 	var err error
 	if f.surface, err = f.instance.CreateSurfaceHWND(hwnd, testHInstance()); err != nil {

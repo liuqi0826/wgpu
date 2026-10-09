@@ -144,8 +144,22 @@ func (i *Instance) RequestAdapter(opts *native.RequestAdapterOptions) (*Adapter,
 	return adapter, nil
 }
 
-// CreateSurfaceHWND wraps a Win32 window. hinstance may be zero.
+// CreateSurfaceHWND wraps a Win32 window. A zero hinstance is replaced by the
+// module instance of the window (or else of the executable): the Vulkan
+// backend aborts the process on a zero hinstance.
+//
+// It returns an error for a nil or released instance and when hwnd is not an
+// existing window, on which wgpu-native aborts the process later.
 func (i *Instance) CreateSurfaceHWND(hwnd, hinstance uintptr) (*Surface, error) {
+	switch {
+	case i.Native() == 0:
+		return nil, &Error{Op: "CreateSurface", Status: "instance is nil or released"}
+	case !isWindow(hwnd):
+		return nil, &Error{Op: "CreateSurface", Status: fmt.Sprintf("hwnd %#x is not a window", hwnd)}
+	}
+	if hinstance == 0 {
+		hinstance = windowInstance(hwnd)
+	}
 	var m cmem
 	source := cnew(&m, native.SurfaceSourceWindowsHWND{
 		Chain:     native.ChainedStruct{SType: native.STypeSurfaceSourceWindowsHWND},
@@ -158,7 +172,7 @@ func (i *Instance) CreateSurfaceHWND(hwnd, hinstance uintptr) (*Surface, error) 
 	if handle == 0 {
 		return nil, fmt.Errorf("wgpu: CreateSurface returned a null surface")
 	}
-	surface := &Surface{inst: i}
+	surface := &Surface{inst: i, hwnd: hwnd}
 	surface.ptr.Store(uintptr(handle))
 	return surface, nil
 }

@@ -17,6 +17,7 @@ import (
 type Surface struct {
 	ptr  atomic.Uintptr
 	inst *Instance
+	hwnd uintptr // see ConfigureWith
 	// dev is the device of the last successful configuration, nil when the
 	// surface is not configured. wgpu-native aborts on GetCurrentTexture of
 	// an unconfigured surface.
@@ -204,8 +205,8 @@ func removeSrgb(f native.TextureFormat) native.TextureFormat {
 // first checks cfg against the surface capabilities of the device's adapter
 // and the device limits, and returns an error without configuring when
 // wgpu-core would reject it. It also returns an error for a nil or released
-// surface or device, a lost device, a device of another instance, and while
-// the texture from GetCurrentTexture has not been released.
+// surface or device, a lost device, a device of another instance, a destroyed
+// window, and while the texture from GetCurrentTexture has not been released.
 func (s *Surface) ConfigureWith(device *Device, cfg SurfaceConfig) error {
 	const op = "SurfaceConfigure"
 	switch {
@@ -217,6 +218,8 @@ func (s *Surface) ConfigureWith(device *Device, cfg SurfaceConfig) error {
 		return device.Err()
 	case s.inst != nil && device.inst != nil && s.inst != device.inst:
 		return &Error{Op: op, Status: "device was created from another instance"}
+	case s.hwnd != 0 && !isWindow(s.hwnd):
+		return &Error{Op: op, Status: "the window of the surface was destroyed"}
 	}
 	caps, err := s.capabilities(native.Adapter(device.adapter.Load()))
 	if err != nil {
@@ -308,10 +311,14 @@ func (s *Surface) GetCurrentTexture() (*Texture, native.SurfaceGetCurrentTexture
 	return newTexture(handle), status
 }
 
-// Present presents the current texture.
+// Present presents the current texture. It returns an error without
+// presenting when the window of the surface was destroyed.
 func (s *Surface) Present() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.hwnd != 0 && !isWindow(s.hwnd) {
+		return &Error{Op: "SurfacePresent", Status: "the window of the surface was destroyed"}
+	}
 	status := native.SurfacePresent(s.Native())
 	if status != native.StatusSuccess {
 		return &Error{Op: "SurfacePresent", Status: status.String()}
