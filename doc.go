@@ -48,8 +48,18 @@
 // RequestDeviceWith 接受 DeviceOptions：OnLost、OnUncapturedError 回调，以及
 // RequiredLimits、RequiredFeatures。回调按顺序在设备自己的 goroutine 上执行，可以再调用本包；
 // Device.Release 之后不再触发。wgpu-native 29 不转发设备丢失事件，Device.Destroy
-// 由 Go 侧记录丢失并触发 OnLost。wgpu-native 在 QueueSubmit、SurfaceConfigure 等调用
-// 失败时会直接终止进程，所以设备丢失后这些方法什么也不做，用 Device.Lost 或 Device.Err 查询状态。
+// 由 Go 侧记录丢失并触发 OnLost，用 Device.Lost 或 Device.Err 查询状态。
+//
+// wgpu-native 在 QueueSubmit、SurfaceConfigure、InstanceCreateSurface、SurfaceGetCurrentTexture
+// 等调用失败时会直接终止进程，所以本包先在 Go 侧检查，有问题返回错误而不调用 native：
+// 设备丢失后 Queue.Submit 和 Surface.ConfigureWith 返回 Device.Err；Queue.Submit 检查命令缓冲区
+// （包括其中的绑定组和 RenderBundle）用到的 buffer 是否仍在映射、已释放或属于其他设备，
+// texture 和 query set 是否已 Destroy，命令缓冲区本身是否已提交；Surface.ConfigureWith 和
+// Configure 返回 error，先对照 Surface.Capabilities 和设备的 MaxTextureDimension2D 检查格式、
+// 尺寸、usage、present mode、alpha mode 和 view format；CreateSurfaceHWND 用 IsWindow 检查窗口，
+// hinstance 为 0 时改用窗口所属模块；Surface 跟踪 GetCurrentTexture 取得的纹理，纹理释放之前
+// 不能再取下一张或重新配置，Surface.Release、Unconfigure 推迟到纹理释放之后，Device.Release
+// 和 Destroy 先释放未呈现的纹理。QuerySet.Destroy 等同于 Release。仍然拦不住的情况见 README.md。
 //
 // 当前这份 wgpu-native 会在请求适配器、请求设备和弹出错误域时同步调用回调，
 // 并且没有实现 wgpuInstanceWaitAny，所以这些调用不会进入 WaitAny。缓冲区映射（MapAsync）

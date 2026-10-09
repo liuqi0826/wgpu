@@ -101,8 +101,9 @@ func main() {
 	enc.CopyBufferToBuffer(src, 0, dst, 0, 16)
 	commands, err := enc.Finish() // 命令里的验证错误在这里返回
 	check(err)
-	queue.Submit(commands)
+	err = queue.Submit(commands) // 提交前在 Go 侧检查引用的资源
 	commands.Release()
+	check(err)
 
 	check(dst.Map(native.MapModeRead, 0, 0)) // 阻塞，内部轮询设备
 	data, err := dst.ReadMapped(0, 16)
@@ -127,7 +128,7 @@ func main() {
 - QuerySet：遮挡查询、pass 的时间戳写入、pipeline statistics 查询、`ResolveQuerySet`、`Queue.TimestampPeriod`
 - 调试标记：四种编码器的 `PushDebugGroup` / `PopDebugGroup` / `InsertDebugMarker`
 - `Queue.OnSubmittedWorkDone`（返回 channel）和阻塞的 `WaitSubmittedWorkDone`
-- Win32 窗口表面：`Instance.CreateSurfaceHWND`、`Surface.ConfigureWith`、`GetCurrentTexture`、`Present`
+- Win32 窗口表面：`Instance.CreateSurfaceHWND`、`Surface.ConfigureWith`（返回 error）、`GetCurrentTexture`、`Present`
 - 错误域 `PushErrorScope` / `PopErrorScope`
 
 ## 后端选择
@@ -351,8 +352,8 @@ if adapter.HasFeature(wgpu.FeatureImmediates) {
 
   | 情况 | wgpu-native 的行为 | 本包的处理 |
   | --- | --- | --- |
-  | 设备丢失后调用 `Queue.Submit` | 终止进程 | 直接跳过，什么也不做 |
-  | 设备丢失后调用 `Surface.ConfigureWith` / `Configure` | 终止进程 | 直接跳过 |
+  | 设备丢失后调用 `Queue.Submit` | 终止进程 | 不调用，返回 `Device.Err()` |
+  | 设备丢失后调用 `Surface.ConfigureWith` / `Configure` | 终止进程 | 不调用，返回 `Device.Err()` |
   | 设备丢失后调用 `Device.Poll` | 失败时终止进程 | 不调用，返回 `false` |
   | 设备丢失后调用 `Buffer.Map` / `MapAsync` / `OnSubmittedWorkDone` | 永远不会完成 | 立即返回丢失错误 |
   | 对未配置的 surface 或在设备丢失后调用 `GetCurrentTexture` | 终止进程 | 不调用，返回 `SurfaceGetCurrentTextureStatusError` |
@@ -368,14 +369,42 @@ if adapter.HasFeature(wgpu.FeatureImmediates) {
   | `wgpuBufferGetMapState`、`wgpuDeviceGetAdapterInfo`、`wgpuShaderModuleGetCompilationInfo` | 终止进程（`unimplemented!()`） | 不调用，`MapState`、`AdapterInfo`、`CompilationInfo` 在 Go 侧实现 |
   | RenderBundle 里 `SetImmediates` 的 offset 或长度不是 4 的倍数 | `assert_eq!` 失败，终止进程 | Go 侧拒绝，`RenderBundleEncoder.Finish` 返回错误 |
   | `SetImmediates` 数据达到 4 GiB | Rust 侧按 `u32` 读取，静默截断 | Go 侧拒绝 |
+  | `Queue.Submit` 的命令缓冲区（直接或经由绑定组、RenderBundle）用到的 buffer 仍处于映射状态、`MapAsync` 未完成或已 `Release`；texture、query set 已 `Destroy`；命令缓冲区已提交、已释放、属于其他设备，或在同一次调用里出现两次 | 终止进程 | 编码时记录用到的资源，`Submit` 先检查，有问题返回错误且整批都不提交；修正后（例如 `Unmap` 之后）可以再提交。只 `Release` 的 texture 不受影响 |
+  | 命令缓冲区用到其他设备的 buffer | wgpu-core 不检查，直接提交 | `Submit` 返回错误 |
+  | `QuerySet.Destroy` 之后再 `Release` | 终止进程（`wgpuQuerySetDestroy` 实际删除了 wgpu-core ID，释放时再删一次） | `Destroy` 改为释放句柄，ID 只删一次；`Count`、`Type` 用缓存值 |
+  | `Surface.ConfigureWith` 的格式为 Undefined 或不在 capabilities 里、宽或高为 0 或超过 `MaxTextureDimension2D`、usage 超出 capabilities、present mode 或 alpha mode 不受支持、view format 不是 Format 或其 sRGB 变体、GL 后端上 view format 与 Format 不同 | 终止进程 | 对照设备所属 adapter 的 capabilities 和设备限制检查，返回错误。usage 严格按 capabilities：本机 native 实际还接受部分未列出的位（例如 Vulkan、D3D12 上的 `CopyDst`），本包同样拒绝 |
+  | `ConfigureWith` 的 surface 或设备已释放、设备来自其他 instance；`Capabilities` 的 surface 或 adapter 已释放、adapter 来自其他 instance | 终止进程 | 返回错误 |
+  | `CreateSurfaceHWND` 的 instance 已释放 | 终止进程 | 返回错误 |
+  | `CreateSurfaceHWND` 的 hwnd 为 0、无效或已销毁 | 创建成功，之后配置时在 D3D12、GL 上终止进程 | 用 `IsWindow` 预检，返回错误 |
+  | `CreateSurfaceHWND` 的 hinstance 为 0 | Vulkan 后端终止进程 | 改用窗口所属模块（`GetWindowLongPtrW(GWLP_HINSTANCE)`，取不到时用 `GetModuleHandleW(nil)`） |
+  | 窗口在配置后被销毁，再 `ConfigureWith` 或 `Present` | 配置在 D3D12、GL 上终止进程；GL 上呈现失败，之后释放纹理终止进程 | 先检查窗口，返回错误 |
+  | 上一张 surface 纹理未释放时再 `GetCurrentTexture`，或在纹理未释放时 `ConfigureWith` | 终止进程（配置会重置“已呈现”标记，之后释放已呈现的纹理也会终止） | 返回 `SurfaceGetCurrentTextureStatusError` / 错误。纹理要在 `Present` 之后、取下一张之前 `Release` |
+  | surface 纹理未释放时 `Surface.Release` 或 `Unconfigure`，之后再释放纹理 | 终止进程（Vulkan 在 `Release` 时就终止） | 推迟到纹理释放之后再执行 |
+  | 未呈现的 surface 纹理在 `Device.Release` / `Destroy` 之后释放 | 终止进程 | 设备释放前先释放这张纹理，之后的 `Texture.Release` / `TextureRelease` 什么也不做 |
+  | 已释放的 surface 上 `Present`、`Unconfigure`、`GetCurrentTexture` | 终止进程 | 返回错误或 `SurfaceGetCurrentTextureStatusError`，`Unconfigure` 什么也不做 |
+  | 对 surface 纹理调用 `Texture.Destroy` | wgpu-core 丢掉 swapchain 图像，之后 `Present` 失败、释放纹理终止进程 | 什么也不做 |
+  | `Queue.Submit` 用到已呈现或已释放的 surface 纹理 | 终止进程 | 返回错误 |
+  | `Present` 失败后释放未呈现的纹理 | 终止进程 | 泄漏这张纹理（不再 discard） |
   | `MultiDraw*`、`DrawIndirect`、`DrawIndexedIndirect`、`DispatchWorkgroupsIndirect` 传入 nil 或已释放的 indirect / count buffer，或在已释放的 pass 上调用 | `expect` 失败，终止进程 | Go 侧拒绝，`Finish` 返回错误 |
   | 上述间接调用的 `offset + 记录大小 × 数量` 溢出、count offset 不对齐 | wgpu-core 不检查 | Go 侧检查，`Finish` 返回错误 |
 
   仍然没有拦截、会终止进程的情况：
-  - 提交时才发现的问题，例如命令缓冲区引用的缓冲区在提交时仍处于映射状态或已经被销毁；
-  - `Surface.ConfigureWith` 的参数本身无效（格式或尺寸不受支持）；
-  - `GetCurrentTexture` 返回状态以外的失败；
-  - 创建 surface 失败。
+  - 驱动层面的真实设备丢失（不是 `Device.Destroy`）。在 wgpu-native 报告之前，`Queue.Submit`、
+    `Device.Poll`、`ConfigureWith`、`GetCurrentTexture` 和设备释放（`WGPUDeviceImpl::drop` 会等待 GPU）
+    都可能因为设备错误而终止进程。报告之后上面的拦截生效；此时未呈现的 surface 纹理会被泄漏，
+    surface 也随之泄漏（Vulkan 销毁仍持有纹理的 swapchain 会终止进程）。
+  - wgpu-core 内部的其他失败：`wgpuDevicePoll`、`wgpuInstanceProcessEvents` 等待 GPU 失败，
+    取 surface 纹理或配置 surface 时 hal 层出错（显存不足、设备错误等）。
+  - Vulkan 上与 Format 不同的 sRGB view format 需要 `VK_KHR_swapchain_mutable_format`。wgpu-native
+    不暴露 downlevel 标志，本包无法预先判断；驱动不支持时 `ConfigureWith` 会终止进程（本机支持）。
+  - 检查和 native 调用之间的竞态：例如 `Queue.Submit` 检查通过后、真正提交前，另一个 goroutine
+    映射或释放了其中的 buffer。
+  - 直接调用 `native` 包：它原样暴露 C API，不做任何检查。其中 `wgpuGetInstanceFeatures`、
+    `wgpuHasInstanceFeature`、`wgpuSupportedInstanceFeaturesFreeMembers`、`wgpuBufferReadMappedRange`、
+    `wgpuBufferWriteMappedRange` 以及 `unimplemented.rs` 里的函数（各 `SetLabel`、`Create*PipelineAsync`、
+    `wgpuDeviceGetLostFuture`、`wgpuInstanceWaitAny`、WGSL 语言特性、ExternalTexture 等）调用即终止进程，
+    本包不调用它们。用 `native.TextureRelease` 直接释放 `CurrentTexture` 的纹理也会绕过上面的跟踪，
+    应改用 `wgpu.TextureRelease`。
 
 - **设备丢失只能部分感知。** wgpu-native 29 不转发 wgpu-core 的设备丢失回调，只有当后续某个调用
   因为设备丢失而失败时才报告。`Device.Destroy` 由 Go 侧记录丢失并触发一次 `OnLost`；
@@ -405,6 +434,10 @@ go test -count=1 ./...        # 指定后端（cmd 写法）
 `TestPipelineStatisticsRender` / `TestPipelineStatisticsCompute` 在不支持 `PipelineStatisticsQuery` 时跳过（本机 D3D12 和 GL）。
 `SetImmediates` 的测试在不支持 `Immediates` 时跳过（本机三个后端都支持），多重间接绘制的 Count 子测试
 在不支持 `MultiDrawIndirectCount` 时跳过（本机 GL）。
+
+`TestSubmitChecks`、`TestSurfaceConfigChecks`、`TestSurfaceWindowChecks`、`TestSurfaceTextureChecks`
+覆盖的是去掉 Go 侧检查就会终止进程的情况，它们在子进程里运行（`isolate_test.go`），漏检时只让
+这个测试失败，不会把 `go test` 进程一起带走。surface 的测试会创建隐藏窗口。
 
 ## 代码生成
 
