@@ -474,6 +474,10 @@ func (e *RenderBundleEncoder) Finish() (*RenderBundle, error) {
 		return fail("null bundle", "")
 	}
 	b := &RenderBundle{}
+	for _, c := range e.cmds {
+		b.refs.buffer(c.buf)
+		b.refs.group(c.group)
+	}
 	b.ptr.Store(uintptr(handle))
 	e.cmds = nil
 	return b, nil
@@ -487,7 +491,8 @@ func (e *RenderBundleEncoder) Release() {
 
 // RenderBundle is a WGPURenderBundle, executed with RenderPassEncoder.ExecuteBundles.
 type RenderBundle struct {
-	ptr atomic.Uintptr
+	ptr  atomic.Uintptr
+	refs usedRefs // buffers and bind groups of the bundle, see Queue.Submit
 }
 
 // Native returns the raw handle.

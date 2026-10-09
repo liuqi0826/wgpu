@@ -164,6 +164,7 @@ func (p *RenderPassEncoder) BeginPipelineStatisticsQuery(q *QuerySet, index uint
 		p.enc.setErr(op, "pipeline statistics query already active")
 		return
 	}
+	p.enc.refs.querySet(q)
 	native.RenderPassEncoderBeginPipelineStatisticsQuery(p.Native(), q.Native(), index)
 	p.statsActive = true
 }
@@ -192,6 +193,7 @@ func (p *ComputePassEncoder) BeginPipelineStatisticsQuery(q *QuerySet, index uin
 		p.enc.setErr(op, "pipeline statistics query already active")
 		return
 	}
+	p.enc.refs.querySet(q)
 	native.ComputePassEncoderBeginPipelineStatisticsQuery(p.Native(), q.Native(), index)
 	p.statsActive = true
 }

@@ -25,7 +25,8 @@ type TextureDescriptor struct {
 
 // Texture is a WGPUTexture.
 type Texture struct {
-	ptr atomic.Uintptr
+	ptr       atomic.Uintptr
+	destroyed atomic.Bool // see Queue.Submit
 }
 
 func newTexture(handle native.Texture) *Texture {
@@ -104,9 +105,11 @@ func (t *Texture) MipLevelCount() uint32 { return native.TextureGetMipLevelCount
 func (t *Texture) SampleCount() uint32 { return native.TextureGetSampleCount(t.Native()) }
 
 // Destroy frees the GPU memory now. Work already submitted still completes.
-// The handle stays valid until Release.
+// The handle stays valid until Release. Queue.Submit rejects command buffers
+// that use a destroyed texture.
 func (t *Texture) Destroy() {
 	if handle := t.Native(); handle != 0 {
+		t.destroyed.Store(true)
 		native.TextureDestroy(handle)
 	}
 }
@@ -156,7 +159,7 @@ func (t *Texture) CreateView(desc *TextureViewDescriptor) (*TextureView, error) 
 	if handle == 0 {
 		return nil, &Error{Op: "TextureCreateView", Status: "null view"}
 	}
-	view := &TextureView{}
+	view := &TextureView{tex: t}
 	view.ptr.Store(uintptr(handle))
 	return view, nil
 }
@@ -164,6 +167,7 @@ func (t *Texture) CreateView(desc *TextureViewDescriptor) (*TextureView, error) 
 // TextureView is a WGPUTextureView.
 type TextureView struct {
 	ptr atomic.Uintptr
+	tex *Texture // the viewed texture, see Queue.Submit
 }
 
 // Native returns the raw handle.

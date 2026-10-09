@@ -118,6 +118,17 @@ func (e *CommandEncoder) BeginRenderPass(desc *RenderPassDescriptor) (*RenderPas
 	if handle == 0 {
 		return nil, &Error{Op: "CommandEncoderBeginRenderPass", Status: "null encoder"}
 	}
+	for _, a := range desc.ColorAttachments {
+		e.refs.view(a.View)
+		e.refs.view(a.ResolveTarget)
+	}
+	if ds := desc.DepthStencilAttachment; ds != nil {
+		e.refs.view(ds.View)
+	}
+	e.refs.querySet(desc.OcclusionQuerySet)
+	if w := desc.TimestampWrites; w != nil {
+		e.refs.querySet(w.QuerySet)
+	}
 	pass := &RenderPassEncoder{enc: e, occlusionSet: desc.OcclusionQuerySet}
 	pass.ptr.Store(uintptr(handle))
 	return pass, nil
@@ -155,6 +166,9 @@ func (p *RenderPassEncoder) ExecuteBundles(bundles ...*RenderBundle) {
 			return
 		}
 	}
+	for _, b := range bundles {
+		p.enc.refs.bundle(b)
+	}
 	native.RenderPassEncoderExecuteBundles(p.Native(), uintptr(len(raw)), &raw[0])
 	runtime.KeepAlive(raw)
 }
@@ -182,6 +196,7 @@ func (p *RenderPassEncoder) DrawIndexedIndirect(buf *Buffer, offset uint64) {
 
 // SetBindGroup binds group at index with optional dynamic offsets.
 func (p *RenderPassEncoder) SetBindGroup(index uint32, group *BindGroup, dynamicOffsets ...uint32) {
+	p.enc.refs.group(group)
 	if len(dynamicOffsets) == 0 {
 		native.RenderPassEncoderSetBindGroup(p.Native(), index, group.Native(), 0, nil)
 		return
@@ -196,6 +211,7 @@ func (p *RenderPassEncoder) SetVertexBuffer(slot uint32, buf *Buffer, offset, si
 	if size == 0 {
 		size = native.WholeSize
 	}
+	p.enc.refs.buffer(buf)
 	native.RenderPassEncoderSetVertexBuffer(p.Native(), slot, buf.Native(), offset, size)
 }
 
@@ -204,6 +220,7 @@ func (p *RenderPassEncoder) SetIndexBuffer(buf *Buffer, format native.IndexForma
 	if size == 0 {
 		size = native.WholeSize
 	}
+	p.enc.refs.buffer(buf)
 	native.RenderPassEncoderSetIndexBuffer(p.Native(), buf.Native(), format, offset, size)
 }
 
@@ -267,11 +284,15 @@ func (p *RenderPassEncoder) Release() {
 
 // CopyBufferToBuffer copies size bytes between buffers.
 func (e *CommandEncoder) CopyBufferToBuffer(src *Buffer, srcOffset uint64, dst *Buffer, dstOffset, size uint64) {
+	e.refs.buffer(src)
+	e.refs.buffer(dst)
 	native.CommandEncoderCopyBufferToBuffer(e.Native(), src.Native(), srcOffset, dst.Native(), dstOffset, size)
 }
 
 // CopyTextureToBuffer copies a texture region into a buffer.
 func (e *CommandEncoder) CopyTextureToBuffer(src TexelCopyTexture, dst TexelCopyBuffer, size native.Extent3D) {
+	e.refs.texture(src.Texture)
+	e.refs.buffer(dst.Buffer)
 	var m cmem
 	native.CommandEncoderCopyTextureToBuffer(e.Native(), cnew(&m, src.raw()), cnew(&m, dst.raw()), cnew(&m, size))
 	m.done()
@@ -279,6 +300,8 @@ func (e *CommandEncoder) CopyTextureToBuffer(src TexelCopyTexture, dst TexelCopy
 
 // CopyBufferToTexture copies buffer data into a texture region.
 func (e *CommandEncoder) CopyBufferToTexture(src TexelCopyBuffer, dst TexelCopyTexture, size native.Extent3D) {
+	e.refs.buffer(src.Buffer)
+	e.refs.texture(dst.Texture)
 	var m cmem
 	native.CommandEncoderCopyBufferToTexture(e.Native(), cnew(&m, src.raw()), cnew(&m, dst.raw()), cnew(&m, size))
 	m.done()

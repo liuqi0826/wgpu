@@ -114,6 +114,9 @@ func (e *CommandEncoder) BeginComputePass(desc *ComputePassDescriptor) (*Compute
 	if handle == 0 {
 		return nil, &Error{Op: "CommandEncoderBeginComputePass", Status: "null encoder"}
 	}
+	if desc != nil && desc.TimestampWrites != nil {
+		e.refs.querySet(desc.TimestampWrites.QuerySet)
+	}
 	pass := &ComputePassEncoder{enc: e}
 	pass.ptr.Store(uintptr(handle))
 	return pass, nil
@@ -134,6 +137,7 @@ func (p *ComputePassEncoder) SetPipeline(pipeline *ComputePipeline) {
 
 // SetBindGroup binds group at index with optional dynamic offsets.
 func (p *ComputePassEncoder) SetBindGroup(index uint32, group *BindGroup, dynamicOffsets ...uint32) {
+	p.enc.refs.group(group)
 	if len(dynamicOffsets) == 0 {
 		native.ComputePassEncoderSetBindGroup(p.Native(), index, group.Native(), 0, nil)
 		return
@@ -166,6 +170,7 @@ func (p *ComputePassEncoder) DispatchWorkgroupsIndirect(buf *Buffer, offset uint
 		p.enc.setErr(op, status)
 		return
 	}
+	p.enc.refs.buffer(buf)
 	native.ComputePassEncoderDispatchWorkgroupsIndirect(p.Native(), buf.Native(), offset)
 }
 

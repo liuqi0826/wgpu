@@ -450,7 +450,10 @@ func drawFrame(device *wgpu.Device, surface *wgpu.Surface, tex *wgpu.Texture, de
 	if err != nil {
 		return err
 	}
-	device.Queue().Submit(commands)
+	err = device.Queue().Submit(commands)
 	commands.Release()
+	if err != nil {
+		return err
+	}
 	return surface.Present()
 }

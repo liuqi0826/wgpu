@@ -67,6 +67,7 @@ func (p *RenderPassEncoder) multiDrawOK(op string, buf *Buffer, offset uint64, c
 		p.enc.setErr(op, status)
 		return false
 	}
+	p.enc.refs.buffer(buf)
 	return true
 }
 
@@ -115,6 +116,7 @@ func (p *RenderPassEncoder) MultiDrawIndirectCount(buf *Buffer, offset uint64, c
 		p.enc.setErr(op, status)
 		return
 	}
+	p.enc.refs.buffer(countBuf)
 	native.RenderPassEncoderMultiDrawIndirectCount(p.Native(), buf.Native(), offset, countBuf.Native(), countOffset, maxCount)
 }
 
@@ -129,5 +131,6 @@ func (p *RenderPassEncoder) MultiDrawIndexedIndirectCount(buf *Buffer, offset ui
 		p.enc.setErr(op, status)
 		return
 	}
+	p.enc.refs.buffer(countBuf)
 	native.RenderPassEncoderMultiDrawIndexedIndirectCount(p.Native(), buf.Native(), offset, countBuf.Native(), countOffset, maxCount)
 }

@@ -297,22 +297,50 @@ func (q *Queue) WriteBuffer(buf *Buffer, offset uint64, data []byte) {
 }
 
 // Submit submits finished command buffers. Each buffer must still be released
-// by the caller after submission. On a lost device it does nothing, because
-// wgpu-native aborts the process when a submit fails; check Device.Err.
-func (q *Queue) Submit(buffers ...*CommandBuffer) {
-	if q.dev.isLost() {
-		return
+// by the caller after submission.
+//
+// wgpu-native aborts the process when a submission fails validation, so the
+// command buffers are checked on the Go side first and nothing is submitted
+// when one of them fails. Submit returns an error for a nil, released or
+// already submitted command buffer, one created on another device, the same
+// command buffer twice in one call, and a command buffer that uses (directly
+// or through a bind group or render bundle) a buffer that is mapped, has a
+// MapAsync in flight, was released or belongs to another device, or a texture
+// or query set that was destroyed. The command buffers are left unsubmitted then, so they can be
+// submitted once the problem is fixed, for example after Unmap.
+//
+// On a released device it returns an error and on a lost device it returns
+// Device.Err, without calling wgpu-native.
+func (q *Queue) Submit(buffers ...*CommandBuffer) error {
+	const op = "QueueSubmit"
+	if q.dev.Native() == 0 || q.ptr == 0 {
+		return &Error{Op: op, Status: "device released"}
 	}
-	if len(buffers) == 0 {
-		native.QueueSubmit(q.ptr, 0, nil)
-		return
+	if q.dev.isLost() {
+		return q.dev.Err()
 	}
 	raw := make([]native.CommandBuffer, len(buffers))
 	for i, buf := range buffers {
+		status := buf.submitStatus(q.dev)
+		if status == "" && slices.Contains(buffers[:i], buf) {
+			status = "passed twice"
+		}
+		if status != "" {
+			return &Error{Op: op, Status: "command buffer " + strconv.Itoa(i) + " " + status}
+		}
 		raw[i] = buf.Native()
+	}
+	if len(raw) == 0 {
+		native.QueueSubmit(q.ptr, 0, nil)
+		return nil
 	}
 	native.QueueSubmit(q.ptr, uintptr(len(raw)), &raw[0])
 	runtime.KeepAlive(raw)
+	for _, buf := range buffers {
+		buf.submitted.Store(true)
+		buf.refs = usedRefs{}
+	}
+	return nil
 }
 
 // ShaderModule is a compiled shader.
@@ -407,9 +435,10 @@ func (m *ShaderModule) Release() {
 
 // CommandEncoder records commands.
 type CommandEncoder struct {
-	dev *Device
-	ptr atomic.Uintptr
-	err error
+	dev  *Device
+	ptr  atomic.Uintptr
+	err  error
+	refs usedRefs // objects used so far, see Queue.Submit
 
 	debugDepth int
 }
@@ -459,7 +488,8 @@ func (e *CommandEncoder) Finish() (*CommandBuffer, error) {
 		}
 		return nil, err
 	}
-	buf := &CommandBuffer{}
+	buf := &CommandBuffer{dev: e.dev, refs: e.refs}
+	e.refs = usedRefs{}
 	buf.ptr.Store(uintptr(raw))
 	return buf, nil
 }
@@ -474,7 +504,23 @@ func (e *CommandEncoder) Release() {
 
 // CommandBuffer is a finished command encoder.
 type CommandBuffer struct {
-	ptr atomic.Uintptr
+	ptr       atomic.Uintptr
+	dev       *Device
+	refs      usedRefs
+	submitted atomic.Bool
+}
+
+// submitStatus reports why b cannot be submitted to the queue of dev, or "".
+func (b *CommandBuffer) submitStatus(dev *Device) string {
+	switch {
+	case b.Native() == 0:
+		return "is nil or released"
+	case b.submitted.Load():
+		return "was already submitted"
+	case b.dev != dev:
+		return "was created on another device"
+	}
+	return b.refs.check(dev)
 }
 
 // Native returns the raw command buffer handle.

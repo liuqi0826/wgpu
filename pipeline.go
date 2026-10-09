@@ -146,7 +146,8 @@ type BindGroupDescriptor struct {
 
 // BindGroup is a WGPUBindGroup.
 type BindGroup struct {
-	ptr atomic.Uintptr
+	ptr  atomic.Uintptr
+	refs usedRefs // bound buffers and textures, see Queue.Submit
 }
 
 // CreateBindGroup creates a bind group.
@@ -184,6 +185,10 @@ func (d *Device) CreateBindGroup(desc *BindGroupDescriptor) (*BindGroup, error) 
 		return nil, d.fail("CreateBindGroup")
 	}
 	g := &BindGroup{}
+	for _, e := range desc.Entries {
+		g.refs.buffer(e.Buffer)
+		g.refs.view(e.TextureView)
+	}
 	g.ptr.Store(uintptr(handle))
 	return g, nil
 }

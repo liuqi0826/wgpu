@@ -174,8 +174,11 @@ func run(n int) error {
 	if err != nil {
 		return err
 	}
-	queue.Submit(commands)
+	err = queue.Submit(commands)
 	commands.Release()
+	if err != nil {
+		return err
+	}
 	if err := readback.Map(native.MapModeRead, 0, size); err != nil {
 		return err
 	}

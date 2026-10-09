@@ -30,10 +30,11 @@ type QuerySetDescriptor struct {
 
 // QuerySet is a WGPUQuerySet.
 type QuerySet struct {
-	ptr   atomic.Uintptr
-	typ   native.QueryType
-	count uint32
-	stats []native.PipelineStatisticName
+	ptr       atomic.Uintptr
+	destroyed atomic.Bool // see Queue.Submit
+	typ       native.QueryType
+	count     uint32
+	stats     []native.PipelineStatisticName
 }
 
 // CreateQuerySet creates a query set.
@@ -98,16 +99,27 @@ func (q *QuerySet) Native() native.QuerySet {
 	return native.QuerySet(q.ptr.Load())
 }
 
-// Count returns the number of queries.
-func (q *QuerySet) Count() uint32 { return native.QuerySetGetCount(q.Native()) }
+// Count returns the number of queries. It still works after Release.
+func (q *QuerySet) Count() uint32 { return q.count }
 
-// Type returns the query type.
-func (q *QuerySet) Type() native.QueryType { return native.QuerySetGetType(q.Native()) }
+// Type returns the query type. It still works after Release.
+func (q *QuerySet) Type() native.QueryType { return q.typ }
 
-// Destroy frees the queries now; the handle stays valid until Release.
+// Destroy frees the query set now, so it also acts as Release: the query set
+// can no longer be used, and Queue.Submit rejects command buffers that
+// recorded it before.
+//
+// wgpuQuerySetDestroy drops the wgpu-core ID, which the release of the last
+// reference drops again, aborting the process ("Cannot remove a vacant
+// resource"). Destroy therefore releases the handle instead, which drops the
+// ID exactly once; the GPU memory goes away when no command buffer uses it.
 func (q *QuerySet) Destroy() {
-	if h := q.Native(); h != 0 {
-		native.QuerySetDestroy(h)
+	if q == nil {
+		return
+	}
+	if handle := native.QuerySet(q.ptr.Swap(0)); handle != 0 {
+		q.destroyed.Store(true)
+		native.QuerySetRelease(handle)
 	}
 }
 
@@ -151,6 +163,8 @@ func (e *CommandEncoder) ResolveQuerySet(q *QuerySet, first, count uint32, dst *
 		e.setErr("CommandEncoderResolveQuerySet", "nil or released query set or buffer")
 		return
 	}
+	e.refs.querySet(q)
+	e.refs.buffer(dst)
 	native.CommandEncoderResolveQuerySet(e.Native(), q.Native(), first, count, dst.Native(), offset)
 }
 
@@ -161,6 +175,7 @@ func (e *CommandEncoder) WriteTimestamp(q *QuerySet, index uint32) {
 		e.setErr("CommandEncoderWriteTimestamp", "nil or released query set")
 		return
 	}
+	e.refs.querySet(q)
 	native.CommandEncoderWriteTimestamp(e.Native(), q.Native(), index)
 }
 
