@@ -27,6 +27,11 @@ type Device struct {
 	// device, so a guarded call must not interleave with another push or pop.
 	scopeMu sync.Mutex
 
+	// inst is the instance of the adapter, and adapter holds a reference to
+	// it, see Surface.ConfigureWith.
+	inst    *Instance
+	adapter atomic.Uintptr
+
 	// adapterInfo is read from the adapter by RequestDeviceWith.
 	adapterInfo    AdapterInfo
 	adapterInfoErr error
@@ -135,6 +140,9 @@ func (d *Device) Release() {
 	if handle != 0 {
 		native.DeviceDestroy(handle)
 		native.DeviceRelease(handle)
+	}
+	if adapter := native.Adapter(d.adapter.Swap(0)); adapter != 0 {
+		native.AdapterRelease(adapter)
 	}
 	if slot := d.slot; slot != 0 {
 		d.slot = 0

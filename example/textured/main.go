@@ -216,7 +216,9 @@ func run(frames int, resizeTest bool) error {
 			return false, nil
 		}
 		config.Width, config.Height = w, h
-		surface.ConfigureWith(device, config)
+		if err := surface.ConfigureWith(device, config); err != nil {
+			return false, err
+		}
 		return true, depth.recreate(device, w, h)
 	}
 	if ok, err := configure(); err != nil {

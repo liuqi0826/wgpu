@@ -26,5 +26,7 @@ func TestSurfaceTextureGuards(t *testing.T) {
 	if tex, status := s.GetCurrentTexture(); tex != nil || status != native.SurfaceGetCurrentTextureStatusError {
 		t.Fatalf("lost device: %v %v", tex, status)
 	}
-	s.ConfigureWith(device, SurfaceConfig{Format: native.TextureFormatBGRA8Unorm, Width: 4, Height: 4})
+	if err := s.ConfigureWith(device, SurfaceConfig{Format: native.TextureFormatBGRA8Unorm, Width: 4, Height: 4}); err == nil {
+		t.Fatal("ConfigureWith on a zero surface succeeded")
+	}
 }

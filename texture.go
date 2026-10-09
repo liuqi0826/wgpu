@@ -118,7 +118,7 @@ func (t *Texture) Destroy() {
 func (t *Texture) Release() {
 	handle := native.Texture(t.ptr.Swap(0))
 	if handle != 0 {
-		native.TextureRelease(handle)
+		releaseTextureHandle(handle)
 	}
 }
 

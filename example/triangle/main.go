@@ -150,16 +150,20 @@ func run(frames int, resizeTest, ignoreWMSize bool) error {
 		PresentMode: native.PresentModeFifo,
 		AlphaMode:   pickAlpha(caps.AlphaModes),
 	}
-	configure := func() bool {
+	configure := func() (bool, error) {
 		w, h := win.ClientSize()
 		if w == 0 || h == 0 {
-			return false
+			return false, nil
 		}
 		config.Width, config.Height = w, h
-		surface.ConfigureWith(device, config)
-		return true
+		if err := surface.ConfigureWith(device, config); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
-	if !configure() {
+	if ok, err := configure(); err != nil {
+		return err
+	} else if !ok {
 		return fmt.Errorf("window has no client area")
 	}
 	fmt.Printf("surface: %s, %s, alpha %s, %dx%d\n", config.Format, config.PresentMode, config.AlphaMode, config.Width, config.Height)
@@ -257,7 +261,11 @@ func run(frames int, resizeTest, ignoreWMSize bool) error {
 			win.SetClientSize(640, 480)
 		}
 		if win.TakeResized() && !ignoreWMSize {
-			if !configure() {
+			ok, err := configure()
+			if err != nil {
+				return err
+			}
+			if !ok {
 				time.Sleep(10 * time.Millisecond) // minimized
 				continue
 			}
@@ -284,7 +292,9 @@ func run(frames int, resizeTest, ignoreWMSize bool) error {
 			}
 			skipped++
 			fmt.Printf("surface %s, reconfiguring\n", status)
-			if configure() {
+			if ok, err := configure(); err != nil {
+				return err
+			} else if ok {
 				reconfigured++
 			}
 			continue
@@ -305,7 +315,9 @@ func run(frames int, resizeTest, ignoreWMSize bool) error {
 		rendered++
 		if suboptimal {
 			fmt.Println("surface suboptimal, reconfiguring")
-			if configure() {
+			if ok, err := configure(); err != nil {
+				return err
+			} else if ok {
 				reconfigured++
 			}
 		}

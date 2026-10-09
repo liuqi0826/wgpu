@@ -112,7 +112,7 @@ func (i *Instance) EnumerateAdapters(backends native.InstanceBackend) ([]*Adapte
 		if handle == 0 {
 			continue
 		}
-		item := &Adapter{}
+		item := &Adapter{inst: i}
 		item.ptr.Store(uintptr(handle))
 		out = append(out, item)
 	}
@@ -139,7 +139,7 @@ func (i *Instance) RequestAdapter(opts *native.RequestAdapterOptions) (*Adapter,
 		status := native.RequestAdapterStatus(res.status)
 		return nil, &Error{Op: "RequestAdapter", Status: status.String(), Message: res.message}
 	}
-	adapter := &Adapter{}
+	adapter := &Adapter{inst: i}
 	adapter.ptr.Store(res.handle)
 	return adapter, nil
 }
@@ -158,7 +158,7 @@ func (i *Instance) CreateSurfaceHWND(hwnd, hinstance uintptr) (*Surface, error) 
 	if handle == 0 {
 		return nil, fmt.Errorf("wgpu: CreateSurface returned a null surface")
 	}
-	surface := &Surface{}
+	surface := &Surface{inst: i}
 	surface.ptr.Store(uintptr(handle))
 	return surface, nil
 }

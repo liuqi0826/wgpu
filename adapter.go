@@ -10,7 +10,8 @@ import (
 
 // Adapter is a WGPUAdapter.
 type Adapter struct {
-	ptr atomic.Uintptr
+	ptr  atomic.Uintptr
+	inst *Instance // see Surface.Capabilities
 }
 
 // Native returns the raw handle.
@@ -171,7 +172,10 @@ func (a *Adapter) RequestDeviceWith(opts *DeviceOptions) (*Device, error) {
 		return nil, &Error{Op: "RequestDevice", Status: status.String(), Message: res.message}
 	}
 	queue := native.DeviceGetQueue(native.Device(res.handle))
-	dev := &Device{state: state, slot: slot}
+	dev := &Device{state: state, slot: slot, inst: a.inst}
+	// Surface.ConfigureWith reads the surface capabilities of the adapter.
+	native.AdapterAddRef(a.Native())
+	dev.adapter.Store(uintptr(a.Native()))
 	dev.adapterInfo, dev.adapterInfoErr = a.Info()
 	dev.ptr.Store(res.handle)
 	dev.queue.Store(uintptr(queue))
