@@ -26,7 +26,8 @@ type TextureDescriptor struct {
 // Texture is a WGPUTexture.
 type Texture struct {
 	ptr       atomic.Uintptr
-	destroyed atomic.Bool // see Queue.Submit
+	destroyed atomic.Bool     // see Queue.Submit
+	surf      *surfaceTexture // set for a texture from Surface.GetCurrentTexture
 }
 
 func newTexture(handle native.Texture) *Texture {
@@ -107,7 +108,14 @@ func (t *Texture) SampleCount() uint32 { return native.TextureGetSampleCount(t.N
 // Destroy frees the GPU memory now. Work already submitted still completes.
 // The handle stays valid until Release. Queue.Submit rejects command buffers
 // that use a destroyed texture.
+//
+// Destroy does nothing for a texture from Surface.GetCurrentTexture: wgpu-core
+// would drop the swapchain image, and the following Present or Release would
+// abort the process.
 func (t *Texture) Destroy() {
+	if t != nil && t.surf != nil {
+		return
+	}
 	if handle := t.Native(); handle != 0 {
 		t.destroyed.Store(true)
 		native.TextureDestroy(handle)

@@ -28,19 +28,33 @@ type Surface struct {
 	mu sync.Mutex
 	// cur is the texture returned by CurrentTexture until it is released.
 	cur *surfaceTexture
+	// Unconfigure and Release are deferred until cur is released: releasing
+	// the texture after them aborts the process.
+	pendingUnconfigure bool
+	pendingRelease     native.Surface
+	// leaked is set when an unpresented texture could not be released. The
+	// native surface is leaked then as well: the Vulkan backend aborts when
+	// it destroys a swapchain whose texture is still acquired.
+	leaked bool
 }
 
 // surfaceTexture is a texture acquired from a surface. wgpu-native discards
 // it on release unless it was presented, and aborts the process when that
-// fails, so the surface keeps track of it.
+// fails, so the surface keeps track of it. Its fields are guarded by
+// surface.mu.
 type surfaceTexture struct {
-	surface   *Surface
-	handle    native.Texture
-	presented bool // guarded by surface.mu
+	surface *Surface
+	handle  native.Texture
+	dev     *Device
+	tex     *Texture // the GetCurrentTexture wrapper, nil for CurrentTexture
+
+	presented bool // Present succeeded
+	consumed  bool // Present failed; wgpu-core no longer holds the texture
+	gone      bool // the native texture was released
 }
 
-// surfaceTextures maps the handles of acquired, unreleased surface textures
-// to their surfaceTexture.
+// surfaceTextures maps the handles of acquired surface textures to their
+// surfaceTexture until they are released.
 var surfaceTextures sync.Map
 
 // releaseTextureHandle releases a texture handle, going through its surface
@@ -57,10 +71,70 @@ func (st *surfaceTexture) release() {
 	s := st.surface
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	native.TextureRelease(st.handle)
-	if s.cur == st {
-		s.cur = nil
+	if st.gone {
+		return // released by Device.Release or Device.Destroy
 	}
+	st.gone = true
+	if !st.presented && (st.consumed || st.dev.Native() == 0 || st.dev.isLost()) {
+		// The discard would fail and abort the process: leak the texture.
+		s.leaked = true
+	} else {
+		native.TextureRelease(st.handle)
+	}
+	if s.cur == st {
+		s.curReleased()
+	}
+}
+
+// finished reports whether a command buffer can no longer use the texture:
+// wgpu-core rejects a submission after the texture was presented or
+// discarded, which aborts the process.
+func (st *surfaceTexture) finished() bool {
+	st.surface.mu.Lock()
+	defer st.surface.mu.Unlock()
+	return st.presented || st.consumed || st.gone
+}
+
+// curReleased runs what was deferred until the acquired texture was
+// released. s.mu must be held.
+func (s *Surface) curReleased() {
+	s.cur = nil
+	handle := s.Native()
+	if handle == 0 {
+		handle = s.pendingRelease
+	}
+	if s.pendingUnconfigure && handle != 0 {
+		native.SurfaceUnconfigure(handle)
+	}
+	s.pendingUnconfigure = false
+	if s.pendingRelease != 0 && !s.leaked {
+		native.SurfaceRelease(s.pendingRelease)
+	}
+	s.pendingRelease = 0
+}
+
+// releaseTexturesOf releases the texture acquired from s with device d while
+// d is still valid: releasing an unpresented texture after its device was
+// destroyed aborts the process. The texture handle stays usable for
+// Texture.Release and TextureRelease, which do nothing then.
+func (s *Surface) releaseTexturesOf(d *Device) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.cur
+	if st == nil || st.dev != d || st.gone {
+		return
+	}
+	st.gone = true
+	if st.consumed && !st.presented {
+		s.leaked = true
+	} else {
+		native.TextureRelease(st.handle)
+	}
+	if st.tex != nil {
+		st.tex.ptr.Store(0)
+		surfaceTextures.Delete(st.handle)
+	}
+	s.curReleased()
 }
 
 // Native returns the raw surface handle.
@@ -71,10 +145,24 @@ func (s *Surface) Native() native.Surface {
 	return native.Surface(s.ptr.Load())
 }
 
-// Release drops the surface.
+// Release drops the surface. While the texture from GetCurrentTexture has
+// not been released, the native release waits for it.
 func (s *Surface) Release() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	handle := native.Surface(s.ptr.Swap(0))
-	if handle != 0 {
+	if handle == 0 {
+		return
+	}
+	s.dev.Store(nil)
+	switch {
+	case s.cur != nil:
+		s.pendingRelease = handle
+	case s.leaked:
+	default:
 		native.SurfaceRelease(handle)
 	}
 }
@@ -257,6 +345,7 @@ func (s *Surface) ConfigureWith(device *Device, cfg SurfaceConfig) error {
 	native.SurfaceConfigure(s.Native(), raw)
 	m.done()
 	s.dev.Store(device)
+	device.surfaces.Store(s, struct{}{})
 	return nil
 }
 
@@ -272,55 +361,95 @@ func (s *Surface) Configure(device *Device, format native.TextureFormat, width, 
 	})
 }
 
-// Unconfigure detaches the surface from its device.
+// Unconfigure detaches the surface from its device. While the texture from
+// GetCurrentTexture has not been released, the native unconfiguration waits
+// for it: releasing the texture afterwards would abort the process.
 func (s *Surface) Unconfigure() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.dev.Store(nil)
-	native.SurfaceUnconfigure(s.Native())
+	switch handle := s.Native(); {
+	case handle == 0:
+	case s.cur != nil:
+		s.pendingUnconfigure = true
+	default:
+		native.SurfaceUnconfigure(handle)
+	}
 }
 
 // CurrentTexture acquires the next swapchain texture as a raw handle.
 // The caller must release the texture with TextureRelease after Present.
 // See GetCurrentTexture.
-//
-// It returns status Error without calling wgpu-native when the surface is
-// not configured or its device is lost, because wgpu-native aborts then.
 func (s *Surface) CurrentTexture() (native.Texture, native.SurfaceGetCurrentTextureStatus) {
-	if dev := s.dev.Load(); dev == nil || dev.isLost() || dev.Native() == 0 {
-		return 0, native.SurfaceGetCurrentTextureStatusError
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var tex native.SurfaceTexture
-	native.SurfaceGetCurrentTexture(s.Native(), &tex)
-	if tex.Texture != 0 {
-		st := &surfaceTexture{surface: s, handle: tex.Texture}
-		s.cur = st
-		surfaceTextures.Store(tex.Texture, st)
-	}
-	return tex.Texture, tex.Status
+	return s.acquire(nil)
 }
 
 // GetCurrentTexture acquires the next swapchain texture. The texture is nil
 // unless a texture was returned; on Outdated or Lost reconfigure the surface.
-// Release the texture after Present.
+// Release the texture after Present, before acquiring the next one.
+//
+// It returns status Error without calling wgpu-native, which aborts the
+// process then, when the surface is released or not configured, its device
+// is lost or released, or the previous texture has not been released.
 func (s *Surface) GetCurrentTexture() (*Texture, native.SurfaceGetCurrentTextureStatus) {
-	handle, status := s.CurrentTexture()
-	if handle == 0 {
-		return nil, status
+	var tex *Texture
+	_, status := s.acquire(&tex)
+	return tex, status
+}
+
+func (s *Surface) acquire(wrap **Texture) (native.Texture, native.SurfaceGetCurrentTextureStatus) {
+	if s == nil {
+		return 0, native.SurfaceGetCurrentTextureStatusError
 	}
-	return newTexture(handle), status
+	dev := s.dev.Load()
+	if dev == nil || dev.isLost() || dev.Native() == 0 {
+		return 0, native.SurfaceGetCurrentTextureStatusError
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Native() == 0 || s.cur != nil {
+		return 0, native.SurfaceGetCurrentTextureStatusError
+	}
+	var raw native.SurfaceTexture
+	native.SurfaceGetCurrentTexture(s.Native(), &raw)
+	if raw.Texture != 0 {
+		st := &surfaceTexture{surface: s, handle: raw.Texture, dev: dev}
+		if wrap != nil {
+			st.tex = newTexture(raw.Texture)
+			st.tex.surf = st
+			*wrap = st.tex
+		}
+		s.cur = st
+		surfaceTextures.Store(raw.Texture, st)
+	}
+	return raw.Texture, raw.Status
 }
 
 // Present presents the current texture. It returns an error without
-// presenting when the window of the surface was destroyed.
+// presenting when the surface was released or its window was destroyed.
+//
+// When presenting fails, the texture can no longer be discarded, so releasing
+// it leaks it instead of aborting the process.
 func (s *Surface) Present() error {
+	if s == nil {
+		return &Error{Op: "SurfacePresent", Status: "surface is nil or released"}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.hwnd != 0 && !isWindow(s.hwnd) {
+	switch {
+	case s.Native() == 0:
+		return &Error{Op: "SurfacePresent", Status: "surface is nil or released"}
+	case s.hwnd != 0 && !isWindow(s.hwnd):
 		return &Error{Op: "SurfacePresent", Status: "the window of the surface was destroyed"}
 	}
 	status := native.SurfacePresent(s.Native())
 	if status != native.StatusSuccess {
+		if s.cur != nil && !s.cur.presented {
+			s.cur.consumed = true
+		}
 		return &Error{Op: "SurfacePresent", Status: status.String()}
 	}
 	if s.cur != nil {

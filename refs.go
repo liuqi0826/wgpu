@@ -72,6 +72,9 @@ func (r *usedRefs) check(dev *Device) string {
 		if t.destroyed.Load() {
 			return "uses a destroyed texture"
 		}
+		if t.surf != nil && t.surf.finished() {
+			return "uses a surface texture that was already presented or released"
+		}
 	}
 	for q := range r.querySets {
 		if q.destroyed.Load() {

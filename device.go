@@ -32,6 +32,10 @@ type Device struct {
 	inst    *Instance
 	adapter atomic.Uintptr
 
+	// surfaces lists the surfaces configured with the device, see
+	// Surface.releaseTexturesOf.
+	surfaces sync.Map
+
 	// adapterInfo is read from the adapter by RequestDeviceWith.
 	adapterInfo    AdapterInfo
 	adapterInfoErr error
@@ -95,6 +99,7 @@ func (d *Device) Destroy() {
 	if handle == 0 {
 		return
 	}
+	d.releaseSurfaceTextures()
 	native.DeviceDestroy(handle)
 	// wgpu-native does not report a loss caused by destroy, so record it here.
 	if d.state != nil {
@@ -132,6 +137,9 @@ func (d *Device) Release() {
 		d.state.mu.Unlock()
 		d.state.cancelPending(&Error{Op: "Device", Status: "released"})
 	}
+	if d.Native() != 0 {
+		d.releaseSurfaceTextures()
+	}
 	queue := native.Queue(d.queue.Swap(0))
 	if queue != 0 {
 		native.QueueRelease(queue)
@@ -148,6 +156,15 @@ func (d *Device) Release() {
 		d.slot = 0
 		deviceStates.Delete(slot)
 	}
+}
+
+// releaseSurfaceTextures releases the textures acquired from surfaces
+// configured with d before d goes away.
+func (d *Device) releaseSurfaceTextures() {
+	d.surfaces.Range(func(s, _ any) bool {
+		s.(*Surface).releaseTexturesOf(d)
+		return true
+	})
 }
 
 // CreateBuffer creates a buffer. When mapped is true the buffer is mapped
